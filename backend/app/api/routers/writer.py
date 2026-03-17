@@ -42,6 +42,12 @@ from ...schemas.novel import (
     NovelProject as NovelProjectSchema,
     SelectVersionRequest,
     UpdateChapterOutlineRequest,
+    ChapterOutlineConverseRequest,
+    ChapterOutlineConverseResponse,
+    ProposedOutline,
+    OutlinePreviewRequest,
+    OutlinePreviewResponse,
+    OutlineConfirmRequest,
 )
 from ...schemas.user import UserInDB
 from ...services.chapter_context_service import ChapterContextService
@@ -54,7 +60,8 @@ from ...services.writer_context_builder import WriterContextBuilder
 from ...services.chapter_guardrails import ChapterGuardrails
 from ...services.ai_review_service import AIReviewService
 from ...services.finalize_service import FinalizeService
-from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
+from ...services.foreshadowing_service import ForeshadowingService
+from ...utils.json_utils import remove_think_tags, unwrap_markdown_json, sanitize_json_like_text
 from ...repositories.system_config_repository import SystemConfigRepository
 from ...services.pipeline_orchestrator import PipelineOrchestrator
 
@@ -186,6 +193,33 @@ async def _rewrite_with_guardrails(
         logger.warning("未配置 rewrite_guardrails 提示词，跳过自动修复")
         return original_text
 
+    rewrite_input = f"""
+[原文]
+{original_text}
+
+[章节导演脚本]
+{json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无"}
+
+[违规列表]
+{violations_text}
+"""
+
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt=rewrite_prompt,
+            conversation_history=[{"role": "user", "content": rewrite_input}],
+            temperature=0.3,
+            user_id=user_id,
+            timeout=300.0,
+            response_format=None,
+        )
+        cleaned = remove_think_tags(response)
+        logger.info("成功修复违规内容")
+        return cleaned
+    except Exception as exc:
+        logger.warning("自动修复失败，返回原文: %s", exc)
+        return original_text
+
 
 async def _refresh_edit_summary_and_ingest(
     project_id: str,
@@ -220,9 +254,13 @@ async def _refresh_edit_summary_and_ingest(
         except Exception as exc:
             logger.warning("编辑章节后自动生成摘要失败: %s", exc)
 
-        if summary_text and chapter.selected_version and chapter.selected_version.content == content:
-            chapter.real_summary = summary_text
-            await session.commit()
+        if summary_text:
+            try:
+                if chapter.selected_version and chapter.selected_version.content == content:
+                    chapter.real_summary = summary_text
+                    await session.commit()
+            except Exception as exc:
+                logger.warning("编辑章节后保存摘要到 DB 失败: %s", exc)
 
         try:
             outline_stmt = select(ChapterOutline).where(
@@ -238,39 +276,12 @@ async def _refresh_edit_summary_and_ingest(
                 chapter_number=chapter_number,
                 title=title,
                 content=content,
-                summary=None,
+                summary=summary_text,
                 user_id=user_id or 0,
             )
             logger.info("章节 %s 向量化入库成功", chapter_number)
         except Exception as exc:
             logger.error("章节 %s 向量化入库失败: %s", chapter_number, exc)
-
-    rewrite_input = f"""
-[原文]
-{original_text}
-
-[章节导演脚本]
-{json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无"}
-
-[违规列表]
-{violations_text}
-"""
-
-    try:
-        response = await llm_service.get_llm_response(
-            system_prompt=rewrite_prompt,
-            conversation_history=[{"role": "user", "content": rewrite_input}],
-            temperature=0.3,
-            user_id=user_id,
-            timeout=300.0,
-            response_format=None,
-        )
-        cleaned = remove_think_tags(response)
-        logger.info("成功修复违规内容")
-        return cleaned
-    except Exception as exc:
-        logger.warning("自动修复失败，返回原文: %s", exc)
-        return original_text
 
 
 async def _finalize_chapter_async(
@@ -625,6 +636,7 @@ async def generate_chapter(
         ("[检索到的章节摘要](Markdown)", rag_summaries_text),
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
         ("[禁止角色](本章不允许提及)", forbidden_text),
+        ("[字数要求]", "本章节正文必须在 3000-4000 字之间。请确保内容充实、细节丰富，避免空洞或过于简略的描写。"),
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug("章节写作提示词长度: %s 字符", len(prompt_input))
@@ -645,6 +657,7 @@ async def generate_chapter(
                 user_id=current_user.id,
                 timeout=600.0,
                 response_format=None,
+                max_tokens=5500,  # 3000-4000 字中文约需 3000-4000 tokens，5500 为安全上限
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
@@ -778,6 +791,26 @@ async def generate_chapter(
             contents.append(str(variant))
             metadata.append({"raw": variant})
 
+    # 字数验证日志
+    for i, content in enumerate(contents):
+        word_count = len(content)
+        if word_count < 3000 or word_count > 4000:
+            logger.warning(
+                "项目 %s 第 %s 章版本 %s 字数不符合要求: %s 字（目标: 3000-4000 字）",
+                project_id,
+                request.chapter_number,
+                i + 1,
+                word_count,
+            )
+        else:
+            logger.info(
+                "项目 %s 第 %s 章版本 %s 字数符合要求: %s 字",
+                project_id,
+                request.chapter_number,
+                i + 1,
+                word_count,
+            )
+
     # ========== 8. AI Review: 自动评审多版本 ==========
     ai_review_result = None
     if len(contents) > 1:
@@ -795,14 +828,14 @@ async def generate_chapter(
                     request.chapter_number,
                     ai_review_result.best_version_index,
                 )
-                # 将评审结果附加到 metadata
+                # 将评审结果附加到 metadata（所有版本都显示完整内容）
                 for i, m in enumerate(metadata):
                     m["ai_review"] = {
                         "is_best": i == ai_review_result.best_version_index,
                         "scores": ai_review_result.scores,
-                        "evaluation": ai_review_result.overall_evaluation if i == ai_review_result.best_version_index else None,
-                        "flaws": ai_review_result.critical_flaws if i == ai_review_result.best_version_index else None,
-                        "suggestions": ai_review_result.refinement_suggestions if i == ai_review_result.best_version_index else None,
+                        "evaluation": ai_review_result.overall_evaluation,
+                        "flaws": ai_review_result.critical_flaws,
+                        "suggestions": ai_review_result.refinement_suggestions,
                     }
         except Exception as exc:
             logger.warning("AI 评审失败，跳过: %s", exc)
@@ -838,6 +871,15 @@ async def select_chapter_version(
         await session.rollback()
         raise HTTPException(status_code=400, detail="选中的版本内容为空，无法确认为最终版")
 
+    # 查询章节大纲标题（Chapter 模型本身无 title 字段）
+    outline_stmt = select(ChapterOutline).where(
+        ChapterOutline.project_id == project_id,
+        ChapterOutline.chapter_number == request.chapter_number,
+    )
+    outline_result = await session.execute(outline_stmt)
+    outline = outline_result.scalar_one_or_none()
+    chapter_title = outline.title if outline else f"第{request.chapter_number}章"
+
     # 异步触发向量化入库
     try:
         llm_service = LLMService(session)
@@ -845,9 +887,10 @@ async def select_chapter_version(
         await ingest_service.ingest_chapter(
             project_id=project_id,
             chapter_number=request.chapter_number,
-            title=chapter.title or f"第{request.chapter_number}章",
+            title=chapter_title,
             content=selected_version.content,
-            summary=None
+            summary=chapter.real_summary or None,
+            user_id=current_user.id,
         )
         logger.info(f"章节 {request.chapter_number} 向量化入库成功")
     except Exception as e:
@@ -864,16 +907,17 @@ async def evaluate_chapter(
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ) -> NovelProjectSchema:
+    """评审章节所有版本 - 使用多版本对比评审"""
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
     llm_service = LLMService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
-    # 确保预加载 selected_version 关系
-    from sqlalchemy.orm import selectinload
+
+    # 获取该章节的所有版本
     stmt = (
         select(Chapter)
-        .options(selectinload(Chapter.selected_version))
+        .options(selectinload(Chapter.versions), selectinload(Chapter.selected_version))
         .where(
             Chapter.project_id == project_id,
             Chapter.chapter_number == request.chapter_number,
@@ -881,107 +925,141 @@ async def evaluate_chapter(
     )
     result = await session.execute(stmt)
     chapter = result.scalars().first()
-    
+
     if not chapter:
         chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
 
-    # 如果没有选中版本，使用最新版本进行评审
-    version_to_evaluate = chapter.selected_version
-    if not version_to_evaluate:
-        # 获取该章节的所有版本，选择最新的一个
-        from sqlalchemy.orm import selectinload
-        stmt_versions = (
-            select(Chapter)
-            .options(selectinload(Chapter.versions))
-            .where(
-                Chapter.project_id == project_id,
-                Chapter.chapter_number == request.chapter_number,
-            )
-        )
-        result_versions = await session.execute(stmt_versions)
-        chapter_with_versions = result_versions.scalars().first()
-        
-        if not chapter_with_versions or not chapter_with_versions.versions:
-            raise HTTPException(status_code=400, detail="该章节还没有生成任何版本，无法进行评审")
-        
-        # 使用最新的版本（列表中的最后一个）
-        version_to_evaluate = chapter_with_versions.versions[-1]
-    
-    if not version_to_evaluate or not version_to_evaluate.content:
-        raise HTTPException(status_code=400, detail="版本内容为空，无法进行评审")
+    if not chapter.versions:
+        raise HTTPException(status_code=400, detail="该章节还没有生成任何版本，无法进行评审")
+
+    # 获取所有版本（按创建时间排序）
+    all_versions = sorted(chapter.versions, key=lambda v: v.created_at)
+    versions_to_evaluate = [v for v in all_versions if v.content]
+
+    if not versions_to_evaluate:
+        raise HTTPException(status_code=400, detail="所有版本内容为空，无法进行评审")
 
     chapter.status = "evaluating"
     await session.commit()
 
+    # 获取评审提示词
     eval_prompt = await prompt_service.get_prompt("evaluation")
     if not eval_prompt:
         logger.warning("未配置名为 'evaluation' 的评审提示词，将跳过 AI 评审")
-        # 使用 add_chapter_evaluation 创建评审记录
-        await novel_service.add_chapter_evaluation(
-            chapter=chapter,
-            version=version_to_evaluate,
-            feedback="未配置评审提示词",
-            decision="skipped"
-        )
+        for version in versions_to_evaluate:
+            await novel_service.add_chapter_evaluation(
+                chapter=chapter,
+                version=version,
+                feedback="未配置评审提示词",
+                decision="skipped"
+            )
         return await _load_project_schema(novel_service, project_id, current_user.id)
 
     try:
+        logger.info(
+            "项目 %s 第 %s 章开始多版本对比评审，共 %s 个版本",
+            project_id, request.chapter_number, len(versions_to_evaluate)
+        )
+
+        # 构建评审输入 JSON（evaluation.md 提示词期望的格式）
+        project_schema = await novel_service._serialize_project(project)
+        blueprint = project_schema.blueprint
+
+        # 获取前序章节摘要
+        completed_chapters = []
+        if project.chapters:
+            for ch in sorted(project.chapters, key=lambda c: c.chapter_number):
+                if ch.chapter_number < request.chapter_number and ch.real_summary:
+                    completed_chapters.append({
+                        "chapter_number": ch.chapter_number,
+                        "summary": ch.real_summary
+                    })
+
+        # 构建输入
+        eval_input = {
+            "novel_blueprint": {
+                "title": blueprint.title if blueprint else "",
+                "genre": blueprint.genre if blueprint else "",
+                "style": blueprint.style if blueprint else "",
+                "tone": blueprint.tone if blueprint else "",
+                "world_setting": blueprint.world_setting if blueprint else {},
+                "characters": blueprint.characters if blueprint else [],
+                "relationships": [r.model_dump() for r in blueprint.relationships] if blueprint else [],
+                "chapter_outline": [
+                    {"chapter_number": o.chapter_number, "title": o.title, "summary": o.summary}
+                    for o in blueprint.chapter_outline
+                ] if blueprint and blueprint.chapter_outline else [],
+            },
+            "completed_chapters": completed_chapters,
+            "content_to_evaluate": {
+                "chapter_title": f"第{request.chapter_number}章",
+                "versions": [v.content for v in versions_to_evaluate]
+            }
+        }
+
+        # 调用 LLM 进行评审
         evaluation_raw = await llm_service.get_llm_response(
             system_prompt=eval_prompt,
-            conversation_history=[{"role": "user", "content": version_to_evaluate.content}],
+            conversation_history=[{"role": "user", "content": json.dumps(eval_input, ensure_ascii=False, indent=2)}],
             temperature=0.3,
             user_id=current_user.id,
+            timeout=180.0,
         )
         evaluation_text = remove_think_tags(evaluation_raw)
-        
-        # 校验 AI 返回的内容不为空
+        evaluation_text = unwrap_markdown_json(evaluation_text)
+        evaluation_text = sanitize_json_like_text(evaluation_text)
+
         if not evaluation_text or len(evaluation_text.strip()) == 0:
             raise ValueError("评审结果为空")
-        
-        # 使用 add_chapter_evaluation 创建评审记录
-        # 这会自动设置状态为 WAITING_FOR_CONFIRM
-        await novel_service.add_chapter_evaluation(
-            chapter=chapter,
-            version=version_to_evaluate,
-            feedback=evaluation_text,
-            decision="reviewed"
+
+        # 解析评审结果以获取最佳版本索引
+        try:
+            evaluation_data = json.loads(evaluation_text)
+            best_choice = evaluation_data.get("best_choice", 1)
+            # best_choice 是 1-based 索引
+            best_version_index = best_choice - 1 if isinstance(best_choice, int) else 0
+        except json.JSONDecodeError:
+            best_version_index = 0
+            logger.warning("评审结果不是有效 JSON，默认选择第一个版本")
+
+        # 为每个版本存储评审结果（同一个评审结果）
+        for idx, version in enumerate(versions_to_evaluate):
+            is_best = (idx == best_version_index)
+            await novel_service.add_chapter_evaluation(
+                chapter=chapter,
+                version=version,
+                feedback=evaluation_text,
+                decision="best" if is_best else "reviewed",
+            )
+
+        chapter.status = "waiting_for_confirm"
+        await session.commit()
+
+        logger.info(
+            "项目 %s 第 %s 章评审完成，最佳版本: %s",
+            project_id, request.chapter_number, best_version_index + 1
         )
-        logger.info("项目 %s 第 %s 章评审成功", project_id, request.chapter_number)
+
     except Exception as exc:
         logger.exception("项目 %s 第 %s 章评审失败: %s", project_id, request.chapter_number, exc)
-        # 回滚事务，恢复状态
-        await session.rollback()
-        
-        # 重新加载 chapter 对象（因为 rollback 后对象已脱离 session）
-        stmt = (
-            select(Chapter)
-            .where(
-                Chapter.project_id == project_id,
-                Chapter.chapter_number == request.chapter_number,
-            )
-        )
-        result = await session.execute(stmt)
-        chapter = result.scalars().first()
-        
-        if chapter:
-            # 使用 add_chapter_evaluation 创建失败记录
-            # 注意：这里不能再用 add_chapter_evaluation，因为它会设置状态为 waiting_for_confirm
-            # 失败时应该设置为 evaluation_failed
-            from app.models.novel import ChapterEvaluation
+        chapter.status = "evaluation_failed"
+        await session.commit()
+
+        # 为所有版本创建失败记录
+        from app.models.novel import ChapterEvaluation
+        for version in versions_to_evaluate:
             evaluation_record = ChapterEvaluation(
                 chapter_id=chapter.id,
-                version_id=version_to_evaluate.id,
+                version_id=version.id,
                 decision="failed",
                 feedback=f"评审失败: {str(exc)}",
                 score=None
             )
             session.add(evaluation_record)
-            chapter.status = "evaluation_failed"
-            await session.commit()
-        
-        # 抛出异常，让前端知道评审失败
+        await session.commit()
+
         raise HTTPException(status_code=500, detail=f"评审失败: {str(exc)}")
-    
+
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
@@ -1006,6 +1084,133 @@ async def update_chapter_outline(
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
+@router.post("/novels/{project_id}/chapters/outline-converse", response_model=ChapterOutlineConverseResponse)
+async def converse_chapter_outline(
+    project_id: str,
+    request: ChapterOutlineConverseRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> ChapterOutlineConverseResponse:
+    """通过对话方式修改章节大纲"""
+    novel_service = NovelService(session)
+    llm_service = LLMService(session)
+
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 获取当前章节大纲
+    outline = await novel_service.get_outline(project_id, request.chapter_number)
+    if not outline:
+        raise HTTPException(status_code=404, detail="未找到对应章节大纲")
+
+    # 获取蓝图信息作为上下文
+    project_schema = await novel_service._serialize_project(project)
+    blueprint_context = ""
+    if project_schema.blueprint:
+        bp = project_schema.blueprint
+        blueprint_context = f"""
+故事标题: {bp.title or '未设定'}
+故事概要: {bp.one_sentence_summary or '未设定'}
+风格: {bp.style or '未设定'}
+基调: {bp.tone or '未设定'}
+"""
+        if bp.chapter_outline:
+            # 获取前后章节作为上下文
+            prev_chapters = [
+                f"第{ch.chapter_number}章 - {ch.title}: {ch.summary}"
+                for ch in bp.chapter_outline
+                if ch.chapter_number < request.chapter_number
+            ][-3:]  # 最多显示前3章
+            next_chapters = [
+                f"第{ch.chapter_number}章 - {ch.title}: {ch.summary}"
+                for ch in bp.chapter_outline
+                if ch.chapter_number > request.chapter_number
+            ][:3]  # 最多显示后3章
+
+            if prev_chapters:
+                blueprint_context += f"\n前文章节:\n" + "\n".join(prev_chapters)
+            if next_chapters:
+                blueprint_context += f"\n后续章节:\n" + "\n".join(next_chapters)
+
+    # 构建对话消息
+    current_outline = f"第{outline.chapter_number}章 - {outline.title}: {outline.summary}"
+
+    system_prompt = f"""你是一个专业的小说创作助手。用户正在通过对话修改章节大纲。
+
+当前小说蓝图信息:
+{blueprint_context}
+
+当前章节大纲:
+{current_outline}
+
+你的任务是:
+1. 理解用户对章节大纲的修改需求
+2. 根据故事连贯性和整体结构，给出专业建议
+3. 如果用户的修改合理，生成修改后的大纲建议
+4. 保持修改后的风格与整体故事一致
+
+回复格式要求（JSON）:
+{{
+    "message": "你的回复内容，解释修改建议或询问更多细节",
+    "proposed_outline": {{
+        "title": "修改后的章节标题",
+        "summary": "修改后的章节摘要"
+    }}
+}}
+
+注意:
+- 只有当用户明确提出修改意图时才生成 proposed_outline
+- 如果用户只是在讨论或询问，proposed_outline 设为 null
+- 确保修改后的标题简洁有力，摘要详细但不冗长
+- 保持与前后章节的连贯性"""
+
+    # 构建对话历史
+    conversation_history = list(request.conversation_history)
+    conversation_history.append({"role": "user", "content": request.user_message})
+
+    try:
+        # 调用 LLM
+        content = await llm_service.get_llm_response(
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+            temperature=0.7,
+            user_id=current_user.id,
+            response_format="json_object"
+        )
+
+        # 尝试提取 JSON
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            try:
+                data = json.loads(json_match.group())
+                ai_message = data.get("message", content)
+                proposed = data.get("proposed_outline")
+
+                proposed_outline = None
+                if proposed and isinstance(proposed, dict):
+                    proposed_outline = ProposedOutline(
+                        title=proposed.get("title", outline.title),
+                        summary=proposed.get("summary", outline.summary)
+                    )
+
+                return ChapterOutlineConverseResponse(
+                    ai_message=ai_message,
+                    proposed_outline=proposed_outline
+                )
+            except json.JSONDecodeError:
+                pass
+
+        # 如果无法解析 JSON，直接返回内容
+        return ChapterOutlineConverseResponse(
+            ai_message=content,
+            proposed_outline=None
+        )
+
+    except Exception as e:
+        logger.error(f"章节大纲对话失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"对话处理失败: {str(e)}")
+
+
 @router.post("/novels/{project_id}/chapters/delete", response_model=NovelProjectSchema)
 async def delete_chapters(
     project_id: str,
@@ -1016,8 +1221,7 @@ async def delete_chapters(
     novel_service = NovelService(session)
     await novel_service.ensure_project_owner(project_id, current_user.id)
 
-    for ch_num in request.chapter_numbers:
-        await novel_service.delete_chapter(project_id, ch_num)
+    await novel_service.delete_chapters(project_id, request.chapter_numbers)
 
     await session.commit()
     return await _load_project_schema(novel_service, project_id, current_user.id)
@@ -1035,11 +1239,11 @@ async def generate_chapters_outline(
     llm_service = LLMService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
-    
+
     # 获取蓝图信息
     project_schema = await novel_service._serialize_project(project)
     blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2)
-    
+
     # 获取已有的章节大纲
     existing_outlines = [
         f"第{o.chapter_number}章 - {o.title}: {o.summary}"
@@ -1047,9 +1251,30 @@ async def generate_chapters_outline(
     ]
     existing_outlines_text = "\n".join(existing_outlines) if existing_outlines else "暂无"
 
+    # 确定总章节数：优先使用请求参数，其次使用蓝图中的设置
+    total_chapters = request.total_chapters
+    if not total_chapters and project_schema.blueprint:
+        total_chapters = project_schema.blueprint.total_chapters or 0
+    if not total_chapters:
+        # 如果都没有设置，根据现有大纲数量估算（至少是当前章节数的3倍）
+        total_chapters = max(request.start_chapter * 3, 100)
+
     outline_prompt = await prompt_service.get_prompt("outline_generation")
     if not outline_prompt:
         raise HTTPException(status_code=500, detail="未配置大纲生成提示词")
+
+    # 计算当前进度
+    current_progress = request.start_chapter / total_chapters * 100 if total_chapters > 0 else 0
+
+    # 构建用户提示部分（如果有）
+    user_hint_section = ""
+    if request.user_hint and request.user_hint.strip():
+        user_hint_section = f"""
+[用户提示]
+{request.user_hint.strip()}
+
+**请参考上述用户提示来规划后续章节的发展方向。**
+"""
 
     prompt_input = f"""
 [世界蓝图]
@@ -1057,9 +1282,19 @@ async def generate_chapters_outline(
 
 [已有章节大纲]
 {existing_outlines_text}
-
+{user_hint_section}
 [生成任务]
+- 总章节数：{total_chapters} 章
+- 当前位置：第 {request.start_chapter} 章（进度 {current_progress:.1f}%）
+- 生成数量：{request.num_chapters} 章
+
 请从第 {request.start_chapter} 章开始，续写接下来的 {request.num_chapters} 章的大纲。
+
+**重要提示**：
+1. 你必须根据总章节数 {total_chapters} 和当前进度 {current_progress:.1f}% 来控制故事节奏
+2. 禁止在当前进度阶段让故事完结或进入结局阶段
+3. 确保故事发展符合当前进度的阶段特征
+
 要求返回 JSON 格式，包含一个 chapters 数组，每个元素包含 chapter_number, title, summary。
 """
 
@@ -1069,23 +1304,642 @@ async def generate_chapters_outline(
         temperature=0.7,
         user_id=current_user.id,
     )
-    
+
     cleaned = remove_think_tags(response)
     normalized = unwrap_markdown_json(cleaned)
     try:
         data = json.loads(normalized)
+
+        # 处理章节大纲
         new_outlines = data.get("chapters", [])
         for item in new_outlines:
             await novel_service.update_or_create_outline(
-                project_id, 
-                item["chapter_number"], 
-                item["title"], 
+                project_id,
+                item["chapter_number"],
+                item["title"],
                 item["summary"]
             )
+
+        # 处理新角色
+        new_characters = data.get("new_characters", [])
+        if new_characters and project_schema.blueprint:
+            existing_names = {c.get("name") for c in project_schema.blueprint.characters}
+            updated_characters = list(project_schema.blueprint.characters)
+            for char in new_characters:
+                if char.get("name") and char["name"] not in existing_names:
+                    updated_characters.append({
+                        "name": char.get("name"),
+                        "description": char.get("description", ""),
+                        "identity": char.get("identity", ""),
+                        "personality": char.get("personality", ""),
+                        "goals": char.get("goals", ""),
+                        "abilities": char.get("abilities", ""),
+                        "first_appear_chapter": char.get("first_appear_chapter")
+                    })
+                    existing_names.add(char["name"])
+                    logger.info(f"新增角色: {char.get('name')}")
+
+            # 更新蓝图中的角色列表
+            await novel_service.update_blueprint_characters(project_id, updated_characters)
+
+        # 处理新关系
+        new_relationships = data.get("new_relationships", [])
+        if new_relationships and project_schema.blueprint:
+            updated_relationships = list(project_schema.blueprint.relationships)
+            for rel in new_relationships:
+                if rel.get("character_from") and rel.get("character_to"):
+                    # 转换为蓝图格式
+                    rel_data = {
+                        "from": rel.get("character_from"),
+                        "to": rel.get("character_to"),
+                        "character_from": rel.get("character_from"),
+                        "character_to": rel.get("character_to"),
+                        "description": rel.get("description", ""),
+                        "first_appear_chapter": rel.get("first_appear_chapter")
+                    }
+                    updated_relationships.append(rel_data)
+                    logger.info(f"新增关系: {rel.get('character_from')} -> {rel.get('character_to')}")
+
+            await novel_service.update_blueprint_relationships(project_id, updated_relationships)
+
+        # 处理新地点
+        new_locations = data.get("new_locations", [])
+        if new_locations and project_schema.blueprint:
+            existing_world = project_schema.blueprint.world_setting or {}
+            existing_locations = existing_world.get("locations", [])
+            existing_location_names = {loc.get("name") for loc in existing_locations}
+
+            for loc in new_locations:
+                if loc.get("name") and loc["name"] not in existing_location_names:
+                    existing_locations.append({
+                        "name": loc.get("name"),
+                        "description": loc.get("description", ""),
+                        "type": loc.get("type", ""),
+                        "first_appear_chapter": loc.get("first_appear_chapter")
+                    })
+                    logger.info(f"新增地点: {loc.get('name')}")
+
+            existing_world["locations"] = existing_locations
+            await novel_service.update_blueprint_world_setting(project_id, existing_world)
+
+        # 处理新势力
+        new_factions = data.get("new_factions", [])
+        if new_factions and project_schema.blueprint:
+            existing_world = project_schema.blueprint.world_setting or {}
+            existing_factions = existing_world.get("factions", [])
+            existing_faction_names = {fac.get("name") for fac in existing_factions}
+
+            for fac in new_factions:
+                if fac.get("name") and fac["name"] not in existing_faction_names:
+                    existing_factions.append({
+                        "name": fac.get("name"),
+                        "description": fac.get("description", ""),
+                        "leader": fac.get("leader", ""),
+                        "goals": fac.get("goals", ""),
+                        "first_appear_chapter": fac.get("first_appear_chapter")
+                    })
+                    logger.info(f"新增势力: {fac.get('name')}")
+
+            existing_world["factions"] = existing_factions
+            await novel_service.update_blueprint_world_setting(project_id, existing_world)
+
+        # 处理伏笔：从大纲中提取伏笔并添加到伏笔管理系统
+        foreshadowing_service = ForeshadowingService(session)
+        for item in new_outlines:
+            chapter_number = item.get("chapter_number")
+            foreshadowing_data = item.get("foreshadowing", {})
+            plant_list = foreshadowing_data.get("plant", [])
+            payoff_list = foreshadowing_data.get("payoff", [])
+
+            # 获取或创建章节记录
+            chapter = await novel_service.get_or_create_chapter(project_id, chapter_number)
+
+            # 处理埋设的伏笔
+            for plant_content in plant_list:
+                if plant_content and isinstance(plant_content, str) and plant_content.strip():
+                    try:
+                        await foreshadowing_service.create_foreshadowing(
+                            project_id=project_id,
+                            chapter_id=chapter.id,
+                            chapter_number=chapter_number,
+                            content=plant_content.strip(),
+                            foreshadowing_type="hint",  # 默认类型为 hint
+                            is_manual=False,  # AI 生成的伏笔
+                            ai_confidence=0.8,  # 默认置信度
+                        )
+                        logger.info(f"新增伏笔: project={project_id}, chapter={chapter_number}, content={plant_content[:50]}...")
+                    except Exception as fe:
+                        logger.warning(f"创建伏笔失败: {fe}")
+
+            # 处理回收的伏笔
+            for payoff_content in payoff_list:
+                if payoff_content and isinstance(payoff_content, str) and payoff_content.strip():
+                    try:
+                        # 尝试匹配未回收的伏笔
+                        unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+                            project_id, chapter_number
+                        )
+                        # 简单匹配：查找内容相似的伏笔
+                        matched = None
+                        for fs in unresolved_foreshadowings:
+                            if payoff_content.strip() in fs.content or fs.content in payoff_content.strip():
+                                matched = fs
+                                break
+
+                        if matched:
+                            await foreshadowing_service.resolve_foreshadowing(
+                                foreshadowing_id=matched.id,
+                                resolved_chapter_id=chapter.id,
+                                resolved_chapter_number=chapter_number,
+                                resolution_text=payoff_content.strip(),
+                                resolution_type="direct",
+                            )
+                            logger.info(f"伏笔回收: project={project_id}, chapter={chapter_number}, content={payoff_content[:50]}...")
+                        else:
+                            # 如果没有匹配到，记录日志但不创建新伏笔
+                            logger.info(f"未找到匹配的伏笔进行回收: {payoff_content[:50]}...")
+                    except Exception as fe:
+                        logger.warning(f"伏笔回收失败: {fe}")
+
         await session.commit()
     except Exception as exc:
         logger.exception("生成大纲解析失败: %s", exc)
         raise HTTPException(status_code=500, detail=f"大纲生成失败: {str(exc)}")
+
+    return await _load_project_schema(novel_service, project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/chapters/outline/preview", response_model=OutlinePreviewResponse)
+async def preview_chapters_outline(
+    project_id: str,
+    request: OutlinePreviewRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> OutlinePreviewResponse:
+    """预览大纲生成 - 分两步：先生成新元素，再生成章节大纲"""
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 获取蓝图信息
+    project_schema = await novel_service._serialize_project(project)
+    blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2) if project_schema.blueprint else "{}"
+
+    # 获取已有的章节大纲
+    existing_outlines = [
+        f"第{o.chapter_number}章 - {o.title}: {o.summary}"
+        for o in sorted(project.outlines, key=lambda x: x.chapter_number)
+    ]
+    existing_outlines_text = "\n".join(existing_outlines) if existing_outlines else "暂无"
+
+    # 确定总章节数
+    total_chapters = request.total_chapters
+    if not total_chapters and project_schema.blueprint:
+        total_chapters = project_schema.blueprint.total_chapters or 0
+    if not total_chapters:
+        total_chapters = max(request.start_chapter * 3, 100)
+
+    # 计算当前进度和故事阶段
+    current_progress = request.start_chapter / total_chapters * 100 if total_chapters > 0 else 0
+    if current_progress <= 10:
+        story_phase = "开篇"
+    elif current_progress <= 25:
+        story_phase = "发展初期"
+    elif current_progress <= 50:
+        story_phase = "发展中期"
+    elif current_progress <= 75:
+        story_phase = "高潮铺垫"
+    elif current_progress <= 90:
+        story_phase = "高潮"
+    else:
+        story_phase = "结局"
+
+    # 构建用户提示部分
+    user_hint_section = ""
+    if request.user_hint and request.user_hint.strip():
+        user_hint_section = f"""
+[用户提示]
+{request.user_hint.strip()}
+
+**请参考上述用户提示来规划后续章节的发展方向。**
+"""
+
+    # ========== 第一步：生成新元素（角色、关系、地点、势力） ==========
+    element_prompt = await prompt_service.get_prompt("element_generation")
+    if not element_prompt:
+        raise HTTPException(status_code=500, detail="未配置元素生成提示词")
+
+    element_input = f"""
+[世界蓝图]
+{blueprint_text}
+
+[已有章节大纲]
+{existing_outlines_text}
+{user_hint_section}
+[生成上下文]
+- 起始章节：第 {request.start_chapter} 章
+- 生成章节数：{request.num_chapters} 章
+- 故事进度：{story_phase}（{current_progress:.1f}%）
+- 总章节数：{total_chapters} 章
+
+请为接下来 {request.num_chapters} 章的内容设计新的角色、人物关系、地点和势力。
+"""
+
+    element_response = await llm_service.get_llm_response(
+        system_prompt=element_prompt,
+        conversation_history=[{"role": "user", "content": element_input}],
+        temperature=0.8,  # 稍高的温度增加创意
+        user_id=current_user.id,
+    )
+
+    element_cleaned = remove_think_tags(element_response)
+    element_normalized = unwrap_markdown_json(element_cleaned)
+
+    logger.debug(f"元素生成原始响应长度: {len(element_normalized)} 字符")
+
+    # 解析新元素
+    try:
+        element_data = json.loads(element_normalized)
+    except json.JSONDecodeError as exc:
+        logger.exception("解析元素生成响应失败: %s", exc)
+        element_data = {
+            "new_characters": [],
+            "new_relationships": [],
+            "new_locations": [],
+            "new_factions": []
+        }
+
+    new_characters = element_data.get("new_characters", [])
+    new_relationships = element_data.get("new_relationships", [])
+    new_locations = element_data.get("new_locations", [])
+    new_factions = element_data.get("new_factions", [])
+
+    logger.info(f"元素生成完成: {len(new_characters)} 个角色, {len(new_relationships)} 个关系, {len(new_locations)} 个地点, {len(new_factions)} 个势力")
+
+    # ========== 第二步：生成章节大纲 ==========
+    outline_prompt = await prompt_service.get_prompt("outline_generation")
+    if not outline_prompt:
+        raise HTTPException(status_code=500, detail="未配置大纲生成提示词")
+
+    # 构建新元素的简化摘要（供大纲生成参考）
+    new_elements_summary = {
+        "new_characters": [
+            {"name": c.get("name"), "identity": c.get("identity"), "first_appear_chapter": c.get("first_appear_chapter")}
+            for c in new_characters
+        ],
+        "new_relationships": [
+            {"character_from": r.get("character_from"), "character_to": r.get("character_to"), "description": r.get("description"), "first_appear_chapter": r.get("first_appear_chapter")}
+            for r in new_relationships
+        ],
+        "new_locations": [
+            {"name": l.get("name"), "type": l.get("type"), "first_appear_chapter": l.get("first_appear_chapter")}
+            for l in new_locations
+        ],
+        "new_factions": [
+            {"name": f.get("name"), "first_appear_chapter": f.get("first_appear_chapter")}
+            for f in new_factions
+        ]
+    }
+    new_elements_text = json.dumps(new_elements_summary, ensure_ascii=False, indent=2)
+
+    outline_input = f"""
+[世界蓝图]
+{blueprint_text}
+
+[已有章节大纲]
+{existing_outlines_text}
+
+[新生成的元素]
+以下元素已经在前面为你设计好了，请在对应章节安排它们的登场：
+{new_elements_text}
+{user_hint_section}
+[生成任务]
+- 总章节数：{total_chapters} 章
+- 当前位置：第 {request.start_chapter} 章（进度 {current_progress:.1f}%）
+- 生成数量：{request.num_chapters} 章
+
+请从第 {request.start_chapter} 章开始，续写接下来的 {request.num_chapters} 章的大纲。
+
+**重要提示**：
+1. 你必须根据总章节数 {total_chapters} 和当前进度 {current_progress:.1f}% 来控制故事节奏
+2. 禁止在当前进度阶段让故事完结或进入结局阶段
+3. 确保故事发展符合当前进度的阶段特征
+4. 根据新元素的 first_appear_chapter，在对应章节安排它们的首次登场
+"""
+
+    outline_response = await llm_service.get_llm_response(
+        system_prompt=outline_prompt,
+        conversation_history=[{"role": "user", "content": outline_input}],
+        temperature=0.7,
+        user_id=current_user.id,
+    )
+
+    outline_cleaned = remove_think_tags(outline_response)
+    outline_normalized = unwrap_markdown_json(outline_cleaned)
+    outline_sanitized = sanitize_json_like_text(outline_normalized)
+
+    logger.debug(f"大纲预览原始响应长度: {len(outline_sanitized)} 字符")
+
+    try:
+        outline_data = json.loads(outline_sanitized)
+
+        # 构建预览响应
+        chapters_data = outline_data.get("chapters", [])
+        chapters_preview = []
+        for item in chapters_data:
+            chapters_preview.append({
+                "chapter_number": item.get("chapter_number"),
+                "title": item.get("title", ""),
+                "summary": item.get("summary", ""),
+                "narrative_phase": item.get("narrative_phase"),
+                "story_progress": item.get("story_progress"),
+                "foreshadowing": item.get("foreshadowing"),
+                "emotion_hook": item.get("emotion_hook"),
+            })
+
+        # 提取伏笔信息
+        foreshadowing_plants = []
+        foreshadowing_payoffs = []
+        for item in chapters_data:
+            chapter_number = item.get("chapter_number")
+            foreshadowing_data = item.get("foreshadowing", {})
+            plant_list = foreshadowing_data.get("plant", [])
+            payoff_list = foreshadowing_data.get("payoff", [])
+
+            for plant_content in plant_list:
+                if plant_content and isinstance(plant_content, str) and plant_content.strip():
+                    foreshadowing_plants.append({
+                        "chapter_number": chapter_number,
+                        "content": plant_content.strip()
+                    })
+
+            for payoff_content in payoff_list:
+                if payoff_content and isinstance(payoff_content, str) and payoff_content.strip():
+                    foreshadowing_payoffs.append({
+                        "chapter_number": chapter_number,
+                        "content": payoff_content.strip()
+                    })
+
+        return OutlinePreviewResponse(
+            chapters=chapters_preview,
+            new_characters=new_characters,
+            new_relationships=new_relationships,
+            new_locations=new_locations,
+            new_factions=new_factions,
+            foreshadowing_plants=foreshadowing_plants,
+            foreshadowing_payoffs=foreshadowing_payoffs,
+            ai_message=f"已生成 {len(chapters_preview)} 章大纲预览，包含 {len(new_characters)} 个新角色、{len(new_relationships)} 个新关系、{len(new_locations)} 个新地点、{len(new_factions)} 个新势力、{len(foreshadowing_plants)} 个待埋设伏笔、{len(foreshadowing_payoffs)} 个待回收伏笔。"
+        )
+
+    except json.JSONDecodeError as exc:
+        logger.exception("解析大纲预览失败: %s, 位置: line %s col %s", exc.msg, exc.lineno, exc.colno)
+        # 记录出错的JSON片段
+        error_context = outline_sanitized[max(0, exc.pos - 100):exc.pos + 100] if exc.pos else outline_sanitized[:200]
+        logger.error(f"JSON解析出错附近的文本: ...{error_context}...")
+        raise HTTPException(status_code=500, detail=f"AI返回的数据格式有误，请重试。错误: {exc.msg}")
+
+
+@router.post("/novels/{project_id}/chapters/outline/confirm", response_model=NovelProjectSchema)
+async def confirm_chapters_outline(
+    project_id: str,
+    request: OutlineConfirmRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    """确认大纲 - 用户确认后保存到数据库"""
+    novel_service = NovelService(session)
+    foreshadowing_service = ForeshadowingService(session)
+
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    project_schema = await novel_service._serialize_project(project)
+
+    preview_data = request.preview_data
+
+    try:
+        # 处理章节大纲
+        chapters_data = preview_data.get("chapters", [])
+        for item in chapters_data:
+            await novel_service.update_or_create_outline(
+                project_id,
+                item["chapter_number"],
+                item.get("title", ""),
+                item.get("summary", "")
+            )
+
+        # 处理新角色
+        new_characters = preview_data.get("new_characters", [])
+        if new_characters and project_schema.blueprint:
+            existing_names = {c.get("name") for c in project_schema.blueprint.characters}
+            updated_characters = list(project_schema.blueprint.characters)
+            for char in new_characters:
+                if char.get("name") and char["name"] not in existing_names:
+                    updated_characters.append({
+                        "name": char.get("name"),
+                        "description": char.get("description", ""),
+                        "identity": char.get("identity", ""),
+                        "personality": char.get("personality", ""),
+                        "goals": char.get("goals", ""),
+                        "abilities": char.get("abilities", ""),
+                        "first_appear_chapter": char.get("first_appear_chapter")
+                    })
+                    existing_names.add(char["name"])
+                    logger.info(f"新增角色: {char.get('name')}")
+
+            await novel_service.update_blueprint_characters(project_id, updated_characters)
+
+        # 处理新关系
+        new_relationships = preview_data.get("new_relationships", [])
+        if new_relationships and project_schema.blueprint:
+            updated_relationships = list(project_schema.blueprint.relationships)
+            # 构建已有关系的唯一键集合 (character_from, character_to)
+            # relationships 是 Pydantic Relationship 模型列表，使用属性访问
+            existing_rel_keys = {
+                (r.character_from, r.character_to)
+                for r in updated_relationships
+                if hasattr(r, 'character_from') and hasattr(r, 'character_to')
+            }
+            for rel in new_relationships:
+                if rel.get("character_from") and rel.get("character_to"):
+                    rel_key = (rel.get("character_from"), rel.get("character_to"))
+                    if rel_key in existing_rel_keys:
+                        logger.info(f"关系已存在，跳过: {rel.get('character_from')} -> {rel.get('character_to')}")
+                        continue
+                    rel_data = {
+                        "from": rel.get("character_from"),
+                        "to": rel.get("character_to"),
+                        "character_from": rel.get("character_from"),
+                        "character_to": rel.get("character_to"),
+                        "description": rel.get("description", ""),
+                        "first_appear_chapter": rel.get("first_appear_chapter")
+                    }
+                    updated_relationships.append(rel_data)
+                    existing_rel_keys.add(rel_key)
+                    logger.info(f"新增关系: {rel.get('character_from')} -> {rel.get('character_to')}")
+
+            await novel_service.update_blueprint_relationships(project_id, updated_relationships)
+
+        # 处理新地点和新势力 - 合并处理避免多次调用 update_blueprint_world_setting
+        new_locations = preview_data.get("new_locations", [])
+        new_factions = preview_data.get("new_factions", [])
+
+        if (new_locations or new_factions) and project_schema.blueprint:
+            existing_world = dict(project_schema.blueprint.world_setting or {})
+
+            # 处理地点
+            if new_locations:
+                existing_locations = list(existing_world.get("locations", []))
+                existing_location_names = {loc.get("name") for loc in existing_locations}
+
+                for loc in new_locations:
+                    if loc.get("name") and loc["name"] not in existing_location_names:
+                        existing_locations.append({
+                            "name": loc.get("name"),
+                            "description": loc.get("description", ""),
+                            "type": loc.get("type", ""),
+                            "first_appear_chapter": loc.get("first_appear_chapter")
+                        })
+                        logger.info(f"新增地点: {loc.get('name')}")
+
+                existing_world["locations"] = existing_locations
+
+            # 处理势力
+            if new_factions:
+                existing_factions = list(existing_world.get("factions", []))
+                existing_faction_names = {fac.get("name") for fac in existing_factions}
+
+                for fac in new_factions:
+                    if fac.get("name") and fac["name"] not in existing_faction_names:
+                        existing_factions.append({
+                            "name": fac.get("name"),
+                            "description": fac.get("description", ""),
+                            "leader": fac.get("leader", ""),
+                            "goals": fac.get("goals", ""),
+                            "first_appear_chapter": fac.get("first_appear_chapter")
+                        })
+                        logger.info(f"新增势力: {fac.get('name')}")
+
+                existing_world["factions"] = existing_factions
+
+            # 只调用一次更新
+            await novel_service.update_blueprint_world_setting(project_id, existing_world)
+
+        # 处理伏笔
+        foreshadowing_plants = preview_data.get("foreshadowing_plants", [])
+        foreshadowing_payoffs = preview_data.get("foreshadowing_payoffs", [])
+
+        logger.info(f"伏笔数据: plants={len(foreshadowing_plants)}, payoffs={len(foreshadowing_payoffs)}")
+
+        # 获取章节映射 - 使用 auto_commit=False 避免多次提交
+        chapter_map = {}
+        for item in chapters_data:
+            chapter_number = item.get("chapter_number")
+            chapter = await novel_service.get_or_create_chapter(project_id, chapter_number, auto_commit=False)
+            chapter_map[chapter_number] = chapter
+
+        # 获取已存在的伏笔内容，用于去重
+        existing_foreshadowings, _ = await foreshadowing_service.get_foreshadowings(project_id, limit=1000)
+        existing_fs_contents = {fs.content for fs in existing_foreshadowings}
+        logger.info(f"已存在伏笔数量: {len(existing_foreshadowings)}")
+
+        # 处理埋设的伏笔
+        logger.info(f"开始处理伏笔埋设，共 {len(foreshadowing_plants)} 条，chapter_map 包含章节: {list(chapter_map.keys())}")
+        for plant in foreshadowing_plants:
+            chapter_number = plant.get("chapter_number")
+            content = plant.get("content", "")
+            logger.debug(f"处理伏笔: chapter={chapter_number}, content={content[:30] if content else 'empty'}...")
+
+            if chapter_number not in chapter_map:
+                logger.warning(f"伏笔章节 {chapter_number} 不在 chapter_map 中，跳过")
+                continue
+            if not content:
+                logger.warning(f"伏笔内容为空，跳过: chapter={chapter_number}")
+                continue
+
+            # 检查伏笔是否已存在
+            if content in existing_fs_contents:
+                logger.info(f"伏笔已存在，跳过: chapter={chapter_number}, content={content[:50]}...")
+                continue
+
+            try:
+                chapter = chapter_map[chapter_number]
+                if not chapter.id:
+                    logger.error(f"章节 {chapter_number} 的 ID 为 None，无法创建伏笔")
+                    continue
+
+                # 设置默认的预期回收章节和重要性
+                # importance: major (长期), minor (中期), subtle (短期)
+                # 根据内容长度简单判断重要性
+                if len(content) > 100:
+                    fs_importance = "major"
+                    fs_target_offset = 15  # 长期伏笔，15章后回收
+                elif len(content) > 50:
+                    fs_importance = "minor"
+                    fs_target_offset = 10  # 中期伏笔，10章后回收
+                else:
+                    fs_importance = "subtle"
+                    fs_target_offset = 5   # 短期伏笔，5章后回收
+
+                fs_target_reveal = chapter_number + fs_target_offset
+
+                await foreshadowing_service.create_foreshadowing(
+                    project_id=project_id,
+                    chapter_id=chapter.id,
+                    chapter_number=chapter_number,
+                    content=content,
+                    foreshadowing_type="hint",
+                    is_manual=False,
+                    ai_confidence=0.8,
+                    target_reveal_chapter=fs_target_reveal,
+                    importance=fs_importance,
+                )
+                existing_fs_contents.add(content)  # 添加到已存在集合，防止批量新增时重复
+                logger.info(f"新增伏笔成功: project={project_id}, chapter={chapter_number}, content={content[:50]}...")
+            except Exception as fe:
+                logger.exception(f"创建伏笔失败: chapter={chapter_number}, error={fe}")
+
+        # 处理回收的伏笔
+        logger.info(f"开始处理伏笔回收，共 {len(foreshadowing_payoffs)} 条")
+        for payoff in foreshadowing_payoffs:
+            chapter_number = payoff.get("chapter_number")
+            content = payoff.get("content", "")
+
+            if chapter_number not in chapter_map:
+                logger.warning(f"伏笔回收章节 {chapter_number} 不在 chapter_map 中，跳过")
+                continue
+            if not content:
+                continue
+
+            try:
+                unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+                    project_id, chapter_number
+                )
+                matched = None
+                for fs in unresolved_foreshadowings:
+                    if content in fs.content or fs.content in content:
+                        matched = fs
+                        break
+
+                if matched:
+                    await foreshadowing_service.resolve_foreshadowing(
+                        foreshadowing_id=matched.id,
+                        resolved_chapter_id=chapter_map[chapter_number].id,
+                        resolved_chapter_number=chapter_number,
+                        resolution_text=content,
+                        resolution_type="direct",
+                    )
+                    logger.info(f"伏笔回收成功: project={project_id}, chapter={chapter_number}, content={content[:50]}...")
+                else:
+                    logger.info(f"未找到匹配的伏笔进行回收: {content[:50]}...")
+            except Exception as fe:
+                logger.exception(f"伏笔回收失败: chapter={chapter_number}, error={fe}")
+
+        await session.commit()
+
+    except Exception as exc:
+        logger.exception("确认大纲失败: %s", exc)
+        raise HTTPException(status_code=500, detail=f"大纲确认失败: {str(exc)}")
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 

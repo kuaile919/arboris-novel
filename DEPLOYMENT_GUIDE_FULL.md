@@ -64,9 +64,9 @@ cd /root
 git clone https://github.com/all666666all/AI-novel.git
 cd AI-novel
 
-# 3. 创建 .env 文件
-cp .env.example .env
-nano .env  # 编辑配置
+# 3. 创建 ..env 文件
+cp ..env.example ..env
+nano ..env  # 编辑配置
 
 # 4. 执行部署
 bash deploy/scripts/deploy_docker.sh
@@ -107,10 +107,10 @@ cd AI-novel
 
 ```bash
 # 复制示例配置
-cp .env.example .env
+cp ..env.example ..env
 
 # 编辑配置文件
-nano .env
+nano ..env
 ```
 
 **必需配置项**：
@@ -369,7 +369,7 @@ docker-compose --profile mysql up -d
 docker-compose logs app
 
 # 常见原因：
-# - .env 文件配置错误
+# - ..env 文件配置错误
 # - 端口被占用
 # - 数据库连接失败
 ```
@@ -387,7 +387,7 @@ docker-compose --profile mysql ps
 docker-compose --profile mysql logs db
 
 # 验证数据库配置
-cat .env | grep MYSQL
+cat ..env | grep MYSQL
 ```
 
 ### 3. 健康检查失败

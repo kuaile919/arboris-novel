@@ -56,7 +56,7 @@ backend/*.pyc
 backend/*.pyo
 backend/venv/
 backend/.venv/
-backend/env/
+backend/.env/
 backend/*.egg-info/
 backend/.pytest_cache/
 backend/db/*.db

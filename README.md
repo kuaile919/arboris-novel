@@ -69,9 +69,9 @@
 
 ```bash
 # 1. 复制配置文件
-cp .env.example .env
+cp ..env.example ..env
 
-# 2. 编辑 .env 中的必填项：
+# 2. 编辑 ..env 中的必填项：
 #    - SECRET_KEY: 随机字符串，用于 JWT 等
 #    - OPENAI_API_KEY: 大模型 API Key
 #    - ADMIN_DEFAULT_PASSWORD: 管理员密码（勿用默认值）
@@ -85,14 +85,14 @@ docker compose up -d
 ### 方式二：使用 MySQL（Compose 内 MySQL）
 
 ```bash
-# .env 中设置 DB_PROVIDER=mysql，然后执行：
+# ..env 中设置 DB_PROVIDER=mysql，然后执行：
 DB_PROVIDER=mysql docker compose --profile mysql up -d
 ```
 
 ### 方式三：使用自有 MySQL
 
 ```bash
-# 在 .env 中配置数据库地址、用户名、密码后执行：
+# 在 ..env 中配置数据库地址、用户名、密码后执行：
 DB_PROVIDER=mysql docker compose up -d
 ```
 

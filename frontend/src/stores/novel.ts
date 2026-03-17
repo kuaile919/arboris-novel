@@ -1,7 +1,7 @@
 // AIMETA P=小说状态_当前小说数据管理|R=currentNovel_chapters_fetch|NR=不含API调用|E=store:novel|X=internal|A=useNovelStore|D=pinia|S=none|RD=./README.ai
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline } from '@/api/novel'
+import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline, OutlinePreviewResponse } from '@/api/novel'
 import { NovelAPI } from '@/api/novel'
 
 export const useNovelStore = defineStore('novel', () => {
@@ -12,6 +12,8 @@ export const useNovelStore = defineStore('novel', () => {
   const isLoading = ref(false)
   const error = ref<string | null>(null)
   const pendingChapterEdits = new Map<string, string>()
+  const outlinePreview = ref<OutlinePreviewResponse | null>(null)
+  const isPreviewLoading = ref(false)
 
   // Getters
   const projectsCount = computed(() => projects.value.length)
@@ -255,7 +257,7 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function generateChapterOutline(startChapter: number, numChapters: number) {
+  async function generateChapterOutline(startChapter: number, numChapters: number, userHint?: string) {
     error.value = null
     try {
       if (!currentProject.value) {
@@ -264,13 +266,67 @@ export const useNovelStore = defineStore('novel', () => {
       const updatedProject = await NovelAPI.generateChapterOutline(
         currentProject.value.id,
         startChapter,
-        numChapters
+        numChapters,
+        userHint
       )
       currentProject.value = updatedProject // 更新 store
     } catch (err) {
       error.value = err instanceof Error ? err.message : '生成大纲失败'
       throw err
     }
+  }
+
+  async function previewChapterOutline(startChapter: number, numChapters: number, userHint?: string, totalChapters?: number) {
+    isPreviewLoading.value = true
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      const preview = await NovelAPI.previewChapterOutline(
+        currentProject.value.id,
+        startChapter,
+        numChapters,
+        userHint,
+        totalChapters
+      )
+      outlinePreview.value = preview
+      return preview
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '预览大纲失败'
+      throw err
+    } finally {
+      isPreviewLoading.value = false
+    }
+  }
+
+  async function confirmChapterOutline(startChapter: number) {
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      if (!outlinePreview.value) {
+        throw new Error('没有预览数据')
+      }
+      const updatedProject = await NovelAPI.confirmChapterOutline(
+        currentProject.value.id,
+        startChapter,
+        outlinePreview.value as unknown as Record<string, any>
+      )
+      currentProject.value = updatedProject
+      outlinePreview.value = null // 清除预览
+      // 触发伏笔数据更新事件
+      window.dispatchEvent(new CustomEvent('foreshadowing-updated'))
+      return updatedProject
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '确认大纲失败'
+      throw err
+    }
+  }
+
+  function clearOutlinePreview() {
+    outlinePreview.value = null
   }
 
   async function editChapterContent(projectId: string, chapterNumber: number, content: string) {
@@ -347,6 +403,8 @@ export const useNovelStore = defineStore('novel', () => {
     currentConversationState,
     isLoading,
     error,
+    outlinePreview,
+    isPreviewLoading,
     // Getters
     projectsCount,
     hasCurrentProject,
@@ -365,6 +423,9 @@ export const useNovelStore = defineStore('novel', () => {
     updateChapterOutline,
     deleteChapter,
     generateChapterOutline,
+    previewChapterOutline,
+    confirmChapterOutline,
+    clearOutlinePreview,
     editChapterContent,
     clearError,
     setCurrentProject

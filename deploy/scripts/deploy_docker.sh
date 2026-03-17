@@ -19,14 +19,14 @@ if [ ! -f "deploy/docker-compose.yml" ]; then
     exit 1
 fi
 
-# 检查 .env 文件
+# 检查 ..env 文件
 if [ ! -f ".env" ]; then
     echo -e "${YELLOW}警告：未找到 .env 文件${NC}"
     echo "是否使用示例配置创建 .env 文件？(y/n)"
     read -r response
     if [ "$response" = "y" ]; then
         if [ -f ".env.example" ]; then
-            cp .env.example .env
+            cp ..env.example ..env
             echo -e "${GREEN}✓ 已创建 .env 文件，请编辑后重新运行脚本${NC}"
             exit 0
         else
@@ -40,7 +40,7 @@ if [ ! -f ".env" ]; then
 fi
 
 # 加载环境变量
-source .env
+source ..env
 
 # 检查必需的环境变量
 REQUIRED_VARS=(

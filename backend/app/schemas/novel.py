@@ -80,7 +80,8 @@ class Blueprint(BaseModel):
     characters: List[Dict[str, Any]] = []
     relationships: List[Relationship] = []
     chapter_outline: List[ChapterOutline] = []
-    
+    total_chapters: int = Field(default=0, description="小说预计总章节数，用于大纲续写时保持故事节奏")
+
     class Config:
         from_attributes = True
 
@@ -207,6 +208,8 @@ class DeleteChapterRequest(BaseModel):
 class GenerateOutlineRequest(BaseModel):
     start_chapter: int
     num_chapters: int
+    total_chapters: Optional[int] = Field(default=None, description="小说预计总章节数，用于保持故事节奏")
+    user_hint: Optional[str] = Field(default=None, description="用户提示文字，用于指导大纲生成方向")
 
 
 class BlueprintPatch(BaseModel):
@@ -221,3 +224,61 @@ class BlueprintPatch(BaseModel):
 class EditChapterRequest(BaseModel):
     chapter_number: int
     content: str
+
+
+class ChapterOutlineConverseRequest(BaseModel):
+    """章节大纲对话修改请求"""
+    chapter_number: int
+    user_message: str
+    conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class ProposedOutline(BaseModel):
+    """建议的大纲修改"""
+    title: str
+    summary: str
+
+
+class ChapterOutlineConverseResponse(BaseModel):
+    """章节大纲对话修改响应"""
+    ai_message: str
+    proposed_outline: Optional[ProposedOutline] = None
+
+
+# ========== 大纲预览相关 ==========
+
+class OutlineChapterPreview(BaseModel):
+    """单章大纲预览"""
+    chapter_number: int
+    title: str
+    summary: str
+    narrative_phase: Optional[str] = None
+    story_progress: Optional[str] = None
+    foreshadowing: Optional[Dict[str, List[str]]] = None
+    emotion_hook: Optional[str] = None
+
+
+class OutlinePreviewRequest(BaseModel):
+    """大纲预览请求 - 只生成预览，不保存"""
+    start_chapter: int
+    num_chapters: int
+    total_chapters: Optional[int] = Field(default=None, description="小说预计总章节数")
+    user_hint: Optional[str] = Field(default=None, description="用户提示文字")
+
+
+class OutlinePreviewResponse(BaseModel):
+    """大纲预览响应 - 包含所有生成的内容供用户确认"""
+    chapters: List[OutlineChapterPreview]
+    new_characters: List[Dict[str, Any]] = Field(default_factory=list)
+    new_relationships: List[Dict[str, Any]] = Field(default_factory=list)
+    new_locations: List[Dict[str, Any]] = Field(default_factory=list)
+    new_factions: List[Dict[str, Any]] = Field(default_factory=list)
+    foreshadowing_plants: List[Dict[str, Any]] = Field(default_factory=list, description="待埋设的伏笔 [{chapter_number, content}]")
+    foreshadowing_payoffs: List[Dict[str, Any]] = Field(default_factory=list, description="待回收的伏笔 [{chapter_number, content}]")
+    ai_message: Optional[str] = None
+
+
+class OutlineConfirmRequest(BaseModel):
+    """大纲确认保存请求 - 用户确认后保存"""
+    start_chapter: int
+    preview_data: Dict[str, Any] = Field(..., description="预览时的完整数据，直接传回")

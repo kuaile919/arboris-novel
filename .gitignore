@@ -15,7 +15,7 @@
 .env.production
 .env.test
 
-# 保留 .env.example
+# 保留 ..env.example
 !.env.example
 
 __pycache__/

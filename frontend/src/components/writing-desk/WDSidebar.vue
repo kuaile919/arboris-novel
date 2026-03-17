@@ -188,6 +188,15 @@
                   <!-- 章节操作按钮 -->
                   <div class="flex items-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                     <button
+                      @click.stop="$emit('chatChapter', chapter)"
+                      class="md-icon-btn md-ripple"
+                      title="对话修改大纲"
+                    >
+                      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clip-rule="evenodd"></path>
+                      </svg>
+                    </button>
+                    <button
                       v-if="!isChapterCompleted(chapter.chapter_number)"
                       @click.stop="$emit('editChapter', chapter)"
                       class="md-icon-btn md-ripple"
@@ -276,7 +285,7 @@ interface Props {
 
 const props = defineProps<Props>()
 
-const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'editChapter', 'deleteChapter', 'generateOutline'])
+const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'editChapter', 'deleteChapter', 'generateOutline', 'chatChapter'])
 
 const selectedForDeletion = ref<number[]>([])
 const listContainer = ref<HTMLElement | null>(null)

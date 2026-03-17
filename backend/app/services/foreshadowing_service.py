@@ -34,6 +34,8 @@ class ForeshadowingService:
         author_note: Optional[str] = None,
         is_manual: bool = True,
         ai_confidence: Optional[float] = None,
+        target_reveal_chapter: Optional[int] = None,
+        importance: Optional[str] = None,
     ) -> Foreshadowing:
         """创建伏笔"""
         foreshadowing = Foreshadowing(
@@ -46,10 +48,12 @@ class ForeshadowingService:
             author_note=author_note,
             is_manual=is_manual,
             ai_confidence=ai_confidence,
+            target_reveal_chapter=target_reveal_chapter,
+            importance=importance,
         )
         self.session.add(foreshadowing)
         await self.session.flush()
-        logger.info(f"创建伏笔: project={project_id}, chapter={chapter_number}, type={foreshadowing_type}")
+        logger.info(f"创建伏笔: project={project_id}, chapter={chapter_number}, type={foreshadowing_type}, target={target_reveal_chapter}, importance={importance}")
         return foreshadowing
     
     async def get_foreshadowings(
@@ -142,10 +146,11 @@ class ForeshadowingService:
         current_chapter_number: int,
     ) -> List[Foreshadowing]:
         """获取未回收的伏笔"""
+        # 未回收的伏笔状态包括: planted(已埋设), developing(发展中)
         query = select(Foreshadowing).where(
             and_(
                 Foreshadowing.project_id == project_id,
-                Foreshadowing.status == "open",
+                Foreshadowing.status.in_(["planted", "developing", "open"]),
             )
         ).order_by(Foreshadowing.chapter_number)
         

@@ -86,16 +86,91 @@ const props = defineProps<Props>()
 
 defineEmits(['close'])
 
+/**
+ * 从 Markdown 代码块中提取 JSON 字符串
+ */
+const unwrapMarkdownJson = (rawText: string): string => {
+  if (!rawText) return rawText
+  const trimmed = rawText.trim()
+
+  // 尝试匹配 ```json ... ``` 或 ``` ... ```
+  const fenceMatch = trimmed.match(/```(?:json|JSON)?\s*([\s\S]*?)\s*```/)
+  if (fenceMatch && fenceMatch[1]) {
+    return fenceMatch[1].trim()
+  }
+
+  // 尝试找到 JSON 对象或数组
+  const jsonStart = trimmed.search(/[{\[]/)
+  if (jsonStart !== -1) {
+    const closingBrace = trimmed.lastIndexOf('}')
+    const closingBracket = trimmed.lastIndexOf(']')
+    const endIdx = Math.max(closingBrace, closingBracket)
+    if (endIdx !== -1 && endIdx > jsonStart) {
+      return trimmed.slice(jsonStart, endIdx + 1).trim()
+    }
+  }
+
+  return trimmed
+}
+
+/**
+ * 修复常见的 JSON 格式错误
+ */
+const fixJsonString = (jsonStr: string): string => {
+  if (!jsonStr) return jsonStr
+
+  let result = jsonStr
+
+  // 修复数组中带引号前缀的元素，如 `" "xxx"` -> `"xxx"`
+  result = result.replace(/"(\s*)"([^"]+)"/g, '"$2"')
+
+  // 修复字符串中未转义的换行符
+  // 遍历字符串，跟踪是否在字符串内部
+  const chars = result.split('')
+  let inString = false
+  let escapeNext = false
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]
+    if (escapeNext) {
+      escapeNext = false
+      continue
+    }
+    if (ch === '\\') {
+      escapeNext = true
+      continue
+    }
+    if (ch === '"') {
+      inString = !inString
+    } else if (inString && (ch === '\n' || ch === '\r')) {
+      chars[i] = ch === '\n' ? '\\n' : '\\r'
+    }
+  }
+
+  return chars.join('')
+}
+
 const parsedEvaluation = computed(() => {
   if (!props.evaluation) return null
   try {
-    // First, try to parse the whole string as JSON
-    let data = JSON.parse(props.evaluation);
-    // If successful and it's a string, parse it again (for double-encoded JSON)
-    if (typeof data === 'string') {
-      data = JSON.parse(data);
+    // 先去除 markdown 代码块包裹
+    let cleanedJson = unwrapMarkdownJson(props.evaluation)
+
+    // 尝试直接解析
+    try {
+      let data = JSON.parse(cleanedJson)
+      if (typeof data === 'string') {
+        data = JSON.parse(unwrapMarkdownJson(data))
+      }
+      return data
+    } catch {
+      // 直接解析失败，尝试修复后解析
+      const fixedJson = fixJsonString(cleanedJson)
+      let data = JSON.parse(fixedJson)
+      if (typeof data === 'string') {
+        data = JSON.parse(fixJsonString(unwrapMarkdownJson(data)))
+      }
+      return data
     }
-    return data;
   } catch (error) {
     console.error('Failed to parse evaluation JSON:', error)
     return null

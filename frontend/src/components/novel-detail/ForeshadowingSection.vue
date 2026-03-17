@@ -165,7 +165,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
@@ -312,7 +312,17 @@ const refreshData = () => {
   fetchData()
 }
 
+// 监听伏笔更新事件
+const handleForeshadowingUpdate = () => {
+  fetchData()
+}
+
 onMounted(() => {
   fetchData()
+  window.addEventListener('foreshadowing-updated', handleForeshadowingUpdate)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('foreshadowing-updated', handleForeshadowingUpdate)
 })
 </script>

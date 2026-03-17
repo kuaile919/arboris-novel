@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...models.novel import Chapter, ChapterOutline, ChapterVersion, NovelProject
+from ...models.foreshadowing import Foreshadowing
 from ...schemas.user import UserInDB
 from ...services.llm_service import LLMService
 from ...services.prompt_service import PromptService
@@ -44,7 +45,7 @@ class EmotionCurveResponse(BaseModel):
     emotion_distribution: dict  # 各情感类型的分布
 
 
-class Foreshadowing(BaseModel):
+class ForeshadowingItem(BaseModel):
     """单个伏笔"""
     id: str
     description: str
@@ -64,7 +65,7 @@ class ForeshadowingResponse(BaseModel):
     planted_count: int
     paid_off_count: int
     overdue_count: int
-    foreshadowings: List[Foreshadowing]
+    foreshadowings: List[ForeshadowingItem]
 
 
 # ==================== 情感分析 ====================
@@ -328,8 +329,8 @@ async def get_foreshadowing(
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ) -> ForeshadowingResponse:
-    """获取小说的伏笔追踪数据"""
-    
+    """获取小说的伏笔追踪数据（从数据库读取）"""
+
     # 获取项目
     result = await session.execute(
         select(NovelProject).where(
@@ -340,47 +341,88 @@ async def get_foreshadowing(
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    
-    # 获取所有章节和大纲
-    chapters_result = await session.execute(
-        select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.chapter_number)
-    )
-    chapters = chapters_result.scalars().all()
-    
+
+    # 获取章节大纲（用于获取章节标题）
     outlines_result = await session.execute(
         select(ChapterOutline).where(ChapterOutline.project_id == project_id).order_by(ChapterOutline.chapter_number)
     )
     outlines = {o.chapter_number: o for o in outlines_result.scalars().all()}
-    
-    # 构建章节数据
-    chapters_data = []
-    for chapter in chapters:
-        content = ""
-        if chapter.selected_version_id:
-            version_result = await session.execute(
-                select(ChapterVersion).where(ChapterVersion.id == chapter.selected_version_id)
-            )
-            version = version_result.scalar_one_or_none()
-            if version:
-                content = version.content
-        
-        outline = outlines.get(chapter.chapter_number)
-        
-        chapters_data.append({
-            "chapter_number": chapter.chapter_number,
-            "title": outline.title if outline else f"第{chapter.chapter_number}章",
-            "summary": outline.summary if outline else "",
-            "content": content,
-        })
-    
-    # 提取伏笔
-    foreshadowings = extract_foreshadowings(chapters_data)
-    
+
+    # 从数据库获取伏笔
+    foreshadowings_result = await session.execute(
+        select(Foreshadowing).where(Foreshadowing.project_id == project_id).order_by(Foreshadowing.chapter_number)
+    )
+    db_foreshadowings = foreshadowings_result.scalars().all()
+
+    # 获取当前最大章节号（用于判断 overdue）
+    max_chapter_result = await session.execute(
+        select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.chapter_number.desc()).limit(1)
+    )
+    max_chapter = max_chapter_result.scalar_one_or_none()
+    current_chapter = max_chapter.chapter_number if max_chapter else 0
+
+    # 转换为响应格式
+    foreshadowings = []
+    for f in db_foreshadowings:
+        # 重要性映射：数据库 -> 前端
+        # 数据库: major (长期/重要), minor (中期/次要), subtle (短期/细微)
+        # 前端: long (长期伏笔), medium (中期伏笔), short (短期伏笔)
+        importance_map = {
+            "subtle": "short",
+            "minor": "medium",
+            "major": "long",
+        }
+        front_importance = importance_map.get(f.importance, "medium")
+
+        # 计算预期回收章节
+        # 如果没有设置 target_reveal_chapter，根据重要性计算一个默认值
+        expected_chapter = f.target_reveal_chapter
+        if not expected_chapter:
+            # 根据重要性设置默认的预期回收章节偏移
+            importance_offset = {
+                "subtle": 5,   # 短期伏笔：5章内回收
+                "minor": 10,   # 中期伏笔：10章内回收
+                "major": 15,   # 长期伏笔：15章内回收
+            }
+            offset = importance_offset.get(f.importance, 10)
+            expected_chapter = f.chapter_number + offset
+
+        # 状态映射：数据库 status -> 前端 status
+        # 数据库: planted, developing, revealed, abandoned, partial, resolved
+        # 前端: planted, paid_off, overdue
+        if f.status in ("revealed", "resolved"):
+            front_status = "paid_off"
+        elif f.status in ("abandoned", "partial"):
+            front_status = "overdue"
+        elif f.status in ("planted", "developing", "open"):
+            # 检查是否超过预期回收章节
+            if current_chapter > expected_chapter:
+                front_status = "overdue"
+            else:
+                front_status = "planted"
+        else:
+            front_status = "planted"
+
+        # 获取章节标题
+        outline = outlines.get(f.chapter_number)
+        chapter_title = outline.title if outline else f"第{f.chapter_number}章"
+
+        foreshadowings.append(ForeshadowingItem(
+            id=str(f.id),
+            description=f.content,
+            planted_chapter=f.chapter_number,
+            planted_chapter_title=chapter_title,
+            expected_payoff_chapter=f.target_reveal_chapter,
+            actual_payoff_chapter=f.resolved_chapter_number,
+            status=front_status,
+            importance=front_importance,
+        ))
+
     # 统计
     planted_count = sum(1 for f in foreshadowings if f.status == "planted")
     paid_off_count = sum(1 for f in foreshadowings if f.status == "paid_off")
     overdue_count = sum(1 for f in foreshadowings if f.status == "overdue")
-    
+
     return ForeshadowingResponse(
         project_id=project_id,
         project_title=project.title,

@@ -1,7 +1,7 @@
-# AIMETA P=LLM服务_大模型调用封装|R=API调用_流式生成|NR=不含业务逻辑|E=LLMService|X=internal|A=服务类|D=openai,httpx|S=net|RD=./README.ai
+# AIMETA P=LLM服务_大模型调用封装|R=API调用_流式生成|NR=不含业务逻辑|E=LLMService|X=internal|A=服务类|D=openai,anthropic,httpx|S=net|RD=./README.ai
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 from fastapi import HTTPException, status
@@ -116,7 +116,11 @@ class LLMService:
         top_p: Optional[float] = None,
     ) -> str:
         config = await self._resolve_llm_config(user_id)
-        client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
+        client = LLMClient(
+            api_key=config["api_key"],
+            base_url=config.get("base_url"),
+            provider=config.get("provider"),
+        )
 
         chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
 
@@ -124,7 +128,8 @@ class LLMService:
         finish_reason = None
 
         logger.info(
-            "Streaming LLM response: model=%s user_id=%s messages=%d",
+            "Streaming LLM response: provider=%s model=%s user_id=%s messages=%d",
+            config.get("provider"),
             config.get("model"),
             user_id,
             len(messages),
@@ -136,7 +141,7 @@ class LLMService:
                 model=config.get("model"),
                 temperature=temperature,
                 timeout=int(timeout),
-                response_format=response_format,
+                response_format=response_format if config.get("provider") == "openai" else None,
                 max_tokens=max_tokens,
                 top_p=top_p,
             ):
@@ -157,7 +162,8 @@ class LLMService:
             else:
                 detail = str(exc) or detail
             logger.error(
-                "LLM stream internal error: model=%s user_id=%s detail=%s",
+                "LLM stream internal error: provider=%s model=%s user_id=%s detail=%s",
+                config.get("provider"),
                 config.get("model"),
                 user_id,
                 detail,
@@ -172,25 +178,44 @@ class LLMService:
             else:
                 detail = "无法连接到 AI 服务，请稍后重试"
             logger.error(
-                "LLM stream failed: model=%s user_id=%s detail=%s",
+                "LLM stream failed: provider=%s model=%s user_id=%s detail=%s",
+                config.get("provider"),
                 config.get("model"),
                 user_id,
                 detail,
                 exc_info=exc,
             )
             raise HTTPException(status_code=503, detail=detail) from exc
+        except Exception as exc:
+            # 处理 Anthropic 特定错误
+            error_type = type(exc).__name__
+            error_msg = str(exc)
+            logger.error(
+                "LLM stream failed: provider=%s model=%s user_id=%s error_type=%s error=%s",
+                config.get("provider"),
+                config.get("model"),
+                user_id,
+                error_type,
+                error_msg,
+                exc_info=exc,
+            )
+            if "api_key" in error_msg.lower() or "authentication" in error_msg.lower():
+                raise HTTPException(status_code=401, detail="API Key 无效或未配置")
+            raise HTTPException(status_code=503, detail=f"AI 服务错误: {error_msg}")
 
         logger.debug(
-            "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
+            "LLM response collected: provider=%s model=%s user_id=%s finish_reason=%s preview=%s",
+            config.get("provider"),
             config.get("model"),
             user_id,
             finish_reason,
             full_response[:500],
         )
 
-        if finish_reason == "length":
+        if finish_reason == "length" or finish_reason == "max_tokens":
             logger.warning(
-                "LLM response truncated: model=%s user_id=%s response_length=%d",
+                "LLM response truncated: provider=%s model=%s user_id=%s response_length=%d",
+                config.get("provider"),
                 config.get("model"),
                 user_id,
                 len(full_response),
@@ -202,7 +227,8 @@ class LLMService:
 
         if not full_response:
             logger.error(
-                "LLM returned empty response: model=%s user_id=%s finish_reason=%s",
+                "LLM returned empty response: provider=%s model=%s user_id=%s finish_reason=%s",
+                config.get("provider"),
                 config.get("model"),
                 user_id,
                 finish_reason,
@@ -214,7 +240,8 @@ class LLMService:
 
         await self.usage_service.increment("api_request_count")
         logger.info(
-            "LLM response success: model=%s user_id=%s chars=%d",
+            "LLM response success: provider=%s model=%s user_id=%s chars=%d",
+            config.get("provider"),
             config.get("model"),
             user_id,
             len(full_response),
@@ -222,31 +249,57 @@ class LLMService:
         return full_response
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
+        logger.info("[ _resolve_llm_config called, user_id=%s", user_id)
+
+        # 检查用户是否有自定义配置
         if user_id:
             config = await self.llm_repo.get_by_user(user_id)
+            logger.info("[ 用户自定义配置: %s", config)
             if config and config.llm_provider_api_key:
                 return {
                     "api_key": config.llm_provider_api_key,
                     "base_url": config.llm_provider_url,
                     "model": config.llm_provider_model,
+                    "provider": getattr(config, "llm_provider", settings.llm_provider),
                 }
 
         # 检查每日使用次数限制
         if user_id:
             await self._enforce_daily_limit(user_id)
 
-        api_key = await self._get_config_value("llm.api_key")
-        base_url = await self._get_config_value("llm.base_url")
-        model = await self._get_config_value("llm.model")
+        # 根据 LLM 提供方获取配置
+        provider = await self._get_config_value("llm_provider") or settings.llm_provider
+        logger.info("[ provider from config: %s", provider)
+
+        if provider == "anthropic":
+            # 智谱 BigModel (Zhipu) 配置
+            db_zhipu_api_key = await self._get_config_value("zhipu_api_key")
+            db_zhipu_base_url = await self._get_config_value("zhipu_base_url")
+            db_zhipu_model = await self._get_config_value("zhipu_model_name")
+
+            logger.info("[ DB zhipu config: api_key=%s, base_url=%s, model=%s",
+                db_zhipu_api_key[:20] + "..." if db_zhipu_api_key else None,
+                db_zhipu_base_url, db_zhipu_model)
+
+            api_key = db_zhipu_api_key or settings.zhipu_api_key
+            base_url = db_zhipu_base_url or settings.zhipu_base_url
+            model = db_zhipu_model or settings.zhipu_model_name
+
+            logger.info("[ Final zhipu config: api_key=%s, base_url=%s, model=%s",
+                api_key[:20] + "..." if api_key else None, base_url, model)
+        else:
+            api_key = await self._get_config_value("openai_api_key") or settings.openai_api_key
+            base_url = await self._get_config_value("openai_base_url") or str(settings.openai_base_url) if settings.openai_base_url else None
+            model = await self._get_config_value("openai_model_name") or settings.openai_model_name
 
         if not api_key:
             logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
             raise HTTPException(
                 status_code=500,
-                detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
+                detail=f"未配置默认 {provider.upper()} API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
             )
 
-        return {"api_key": api_key, "base_url": base_url, "model": model}
+        return {"api_key": api_key, "base_url": base_url, "model": model, "provider": provider}
 
     async def get_embedding(
         self,

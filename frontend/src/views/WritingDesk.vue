@@ -50,6 +50,7 @@
           @edit-chapter="openEditChapterModal"
           @delete-chapter="deleteChapter"
           @generate-outline="generateOutline"
+          @chat-chapter="openChapterOutlineChatModal"
         />
 
         <div class="flex-1 min-w-0">
@@ -98,8 +99,20 @@
     />
     <WDGenerateOutlineModal
       :show="showGenerateOutlineModal"
-      @close="showGenerateOutlineModal = false"
-      @generate="handleGenerateOutline"
+      :preview-data="outlinePreviewData"
+      :is-loading="isPreviewLoading"
+      :is-confirming="isConfirmingOutline"
+      @close="handleCloseOutlineModal"
+      @preview="handlePreviewOutline"
+      @confirm="handleConfirmOutline"
+      @back="handleBackOutline"
+    />
+    <WDChapterOutlineChatModal
+      :show="showChapterOutlineChatModal"
+      :project-id="id"
+      :chapter="chattingChapter"
+      @close="showChapterOutlineChatModal = false"
+      @saved="onChapterOutlineChatSaved"
     />
   </div>
 </template>
@@ -108,7 +121,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
-import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
+import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, OutlinePreviewResponse } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
@@ -118,6 +131,7 @@ import WDVersionDetailModal from '@/components/writing-desk/WDVersionDetailModal
 import WDEvaluationDetailModal from '@/components/writing-desk/WDEvaluationDetailModal.vue'
 import WDEditChapterModal from '@/components/writing-desk/WDEditChapterModal.vue'
 import WDGenerateOutlineModal from '@/components/writing-desk/WDGenerateOutlineModal.vue'
+import WDChapterOutlineChatModal from '@/components/writing-desk/WDChapterOutlineChatModal.vue'
 
 interface Props {
   id: string
@@ -140,6 +154,12 @@ const showEditChapterModal = ref(false)
 const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
+const showChapterOutlineChatModal = ref(false)
+const chattingChapter = ref<ChapterOutline | null>(null)
+const outlinePreviewData = ref<OutlinePreviewResponse | null>(null)
+const isPreviewLoading = ref(false)
+const isConfirmingOutline = ref(false)
+const outlineStartChapter = ref(0)
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -507,6 +527,25 @@ const openEditChapterModal = (chapter: ChapterOutline) => {
   showEditChapterModal.value = true
 }
 
+const openChapterOutlineChatModal = (chapter: ChapterOutline) => {
+  chattingChapter.value = chapter
+  showChapterOutlineChatModal.value = true
+}
+
+const onChapterOutlineChatSaved = async (updatedChapter: ChapterOutline) => {
+  // Update the local project data
+  if (project.value?.blueprint?.chapter_outline) {
+    const index = project.value.blueprint.chapter_outline.findIndex(
+      ch => ch.chapter_number === updatedChapter.chapter_number
+    )
+    if (index !== -1) {
+      project.value.blueprint.chapter_outline[index] = updatedChapter
+    }
+  }
+  showChapterOutlineChatModal.value = false
+  globalAlert.showSuccess('章节大纲已更新', '保存成功')
+}
+
 const saveChapterChanges = async (updatedChapter: ChapterOutline) => {
   try {
     await novelStore.updateChapterOutline(updatedChapter)
@@ -575,7 +614,61 @@ const deleteChapter = async (chapterNumbers: number | number[]) => {
 }
 
 const generateOutline = async () => {
+  outlinePreviewData.value = null
   showGenerateOutlineModal.value = true
+}
+
+const handleCloseOutlineModal = () => {
+  showGenerateOutlineModal.value = false
+  outlinePreviewData.value = null
+  novelStore.clearOutlinePreview()
+}
+
+const handlePreviewOutline = async (numChapters: number, userHint?: string) => {
+  if (!project.value) return
+
+  isPreviewLoading.value = true
+  isGeneratingOutline.value = true
+  outlineStartChapter.value = (project.value.blueprint?.chapter_outline?.length || 0) + 1
+
+  try {
+    const totalChapters = project.value.blueprint?.total_chapters
+    const preview = await novelStore.previewChapterOutline(
+      outlineStartChapter.value,
+      numChapters,
+      userHint,
+      totalChapters
+    )
+    outlinePreviewData.value = preview
+  } catch (error) {
+    console.error('预览大纲失败:', error)
+    globalAlert.showError(`预览大纲失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+  } finally {
+    isPreviewLoading.value = false
+    isGeneratingOutline.value = false
+  }
+}
+
+const handleConfirmOutline = async () => {
+  if (!project.value) return
+
+  isConfirmingOutline.value = true
+  try {
+    await novelStore.confirmChapterOutline(outlineStartChapter.value)
+    showGenerateOutlineModal.value = false
+    outlinePreviewData.value = null
+    globalAlert.showSuccess('新的章节大纲已保存', '操作成功')
+  } catch (error) {
+    console.error('确认大纲失败:', error)
+    globalAlert.showError(`确认大纲失败: ${error instanceof Error ? error.message : '未知错误'}`, '保存失败')
+  } finally {
+    isConfirmingOutline.value = false
+  }
+}
+
+const handleBackOutline = () => {
+  outlinePreviewData.value = null
+  novelStore.clearOutlinePreview()
 }
 
 const editChapterContent = async (data: { chapterNumber: number, content: string }) => {
@@ -587,21 +680,6 @@ const editChapterContent = async (data: { chapterNumber: number, content: string
   } catch (error) {
     console.error('编辑章节内容失败:', error)
     globalAlert.showError(`编辑章节内容失败: ${error instanceof Error ? error.message : '未知错误'}`, '保存失败')
-  }
-}
-
-const handleGenerateOutline = async (numChapters: number) => {
-  if (!project.value) return
-  isGeneratingOutline.value = true
-  try {
-    const startChapter = (project.value.blueprint?.chapter_outline?.length || 0) + 1
-    await novelStore.generateChapterOutline(startChapter, numChapters)
-    globalAlert.showSuccess('新的章节大纲已生成', '操作成功')
-  } catch (error) {
-    console.error('生成大纲失败:', error)
-    globalAlert.showError(`生成大纲失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
-  } finally {
-    isGeneratingOutline.value = false
   }
 }
 

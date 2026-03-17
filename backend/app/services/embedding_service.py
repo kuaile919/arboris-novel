@@ -32,15 +32,25 @@ class EmbeddingService:
         self._init_client()
     
     def _init_client(self):
-        """初始化 OpenAI 客户端"""
+        """初始化 OpenAI 客户端（优先使用 Embedding 专用配置，回退至 OpenAI 配置）"""
         try:
             from openai import AsyncOpenAI
-            api_key = settings.openai_api_key if hasattr(settings, 'openai_api_key') else None
-            if api_key:
-                self._client = AsyncOpenAI(api_key=api_key)
-                logger.info("嵌入服务初始化成功")
-            else:
-                logger.warning("未配置 OpenAI API Key，嵌入服务不可用")
+
+            api_key = (
+                getattr(settings, 'embedding_api_key', None)
+                or getattr(settings, 'openai_api_key', None)
+            )
+            base_url = (
+                str(settings.embedding_base_url).rstrip('/') if getattr(settings, 'embedding_base_url', None)
+                else getattr(settings, 'openai_api_base_url', None)
+            )
+
+            if not api_key:
+                logger.warning("未配置 Embedding API Key，嵌入服务不可用")
+                return
+
+            self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            logger.info(f"嵌入服务初始化成功 — model={self._model}, base_url={base_url}")
         except ImportError:
             logger.warning("未安装 openai 包，嵌入服务不可用")
         except Exception as e:

@@ -1,7 +1,7 @@
 # AIMETA P=应用配置_环境变量加载和设置类|R=配置加载_环境变量|NR=不含业务逻辑|E=settings|X=internal|A=Settings类|D=pydantic|S=fs|RD=./README.ai
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import AliasChoices, AnyUrl, Field, HttpUrl, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -67,7 +67,31 @@ class Settings(BaseSettings):
     admin_default_password: str = Field(default="ChangeMe123!", env="ADMIN_DEFAULT_PASSWORD", description="默认管理员密码")
     admin_default_email: Optional[str] = Field(default=None, env="ADMIN_DEFAULT_EMAIL", description="默认管理员邮箱")
 
-    # -------------------- LLM 相关配置 --------------------
+    # -------------------- LLM 提供方配置 --------------------
+    llm_provider: Literal["openai", "anthropic"] = Field(
+        default="anthropic",
+        env="LLM_PROVIDER",
+        description="LLM 提供方，支持 openai 或 anthropic",
+    )
+
+    # -------------------- 智谱 BigModel (Zhipu) 配置 --------------------
+    zhipu_api_key: Optional[str] = Field(
+        default=None,
+        env="ZHIPU_API_KEY",
+        description="智谱 BigModel API Key",
+    )
+    zhipu_base_url: Optional[str] = Field(
+        default=None,
+        env="ZHIPU_BASE_URL",
+        description="智谱 BigModel API Base URL",
+    )
+    zhipu_model_name: str = Field(
+        default="glm-5",
+        env="ZHIPU_MODEL_NAME",
+        description="智谱 BigModel 模型名称",
+    )
+
+    # -------------------- OpenAI 配置（兼容旧版） --------------------
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY", description="默认的 LLM API Key")
     openai_base_url: Optional[HttpUrl] = Field(
         default=None,
@@ -76,6 +100,8 @@ class Settings(BaseSettings):
         description="LLM API Base URL",
     )
     openai_model_name: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL_NAME", description="默认 LLM 模型名称")
+
+    # -------------------- Writer 配置 --------------------
     writer_chapter_versions: int = Field(
         default=2,
         ge=1,
@@ -83,6 +109,8 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WRITER_CHAPTER_VERSION_COUNT", "WRITER_CHAPTER_VERSIONS"),
         description="每次生成章节的候选版本数量",
     )
+
+    # -------------------- Embedding 配置 --------------------
     embedding_provider: str = Field(
         default="openai",
         env="EMBEDDING_PROVIDER",
@@ -119,6 +147,8 @@ class Settings(BaseSettings):
         env="OLLAMA_EMBEDDING_MODEL",
         description="Ollama 嵌入模型名称",
     )
+
+    # -------------------- Vector DB 配置 --------------------
     vector_db_url: Optional[str] = Field(
         default=None,
         env="VECTOR_DB_URL",
@@ -197,6 +227,15 @@ class Settings(BaseSettings):
         if candidate not in {"mysql", "sqlite"}:
             raise ValueError("DB_PROVIDER 仅支持 mysql 或 sqlite")
         return candidate
+
+    @validator("llm_provider", pre=True)
+    def _normalize_llm_provider(cls, value: Optional[str]) -> str:
+        """限制 LLM 提供方的取值范围。"""
+        candidate = (value or "anthropic").strip().lower()
+        if candidate not in {"openai", "anthropic"}:
+            raise ValueError("LLM_PROVIDER 仅支持 openai 或 anthropic")
+        return candidate
+
     @validator("embedding_provider", pre=True)
     def _normalize_embedding_provider(cls, value: Optional[str]) -> str:
         """限制嵌入模型提供方的取值范围。"""
@@ -213,6 +252,19 @@ class Settings(BaseSettings):
         if candidate not in valid_levels:
             raise ValueError("LOGGING_LEVEL 仅支持 CRITICAL/ERROR/WARNING/INFO/DEBUG/NOTSET")
         return candidate
+
+    @validator(
+        "embedding_base_url",
+        "ollama_embedding_base_url",
+        "vector_db_url",
+        "vector_db_auth_token",
+        pre=True,
+    )
+    def _normalize_empty_to_none(cls, value: Optional[str]) -> Optional[str]:
+        """将空字符串转换为 None，避免 URL 验证错误。"""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def sqlalchemy_database_uri(self) -> str:

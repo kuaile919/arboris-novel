@@ -95,7 +95,7 @@ if [ ! -f ".env" ]; then
     # 生成随机密钥
     SECRET_KEY=$(openssl rand -hex 32)
     
-    cat > .env << ENVEOF
+    cat > ..env << ENVEOF
 # 应用配置
 SECRET_KEY=${SECRET_KEY}
 ENVIRONMENT=production

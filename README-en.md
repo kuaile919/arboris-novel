@@ -69,9 +69,9 @@ The goal is a **writing partner that remembers your world, understands your char
 
 ```bash
 # 1. Copy config
-cp .env.example .env
+cp ..env.example ..env
 
-# 2. Edit required fields in .env:
+# 2. Edit required fields in ..env:
 #    - SECRET_KEY: random string for JWT etc.
 #    - OPENAI_API_KEY: your LLM API key
 #    - ADMIN_DEFAULT_PASSWORD: admin password (do not leave default)
@@ -85,14 +85,14 @@ docker compose up -d
 ### Option 2: MySQL via Compose
 
 ```bash
-# Set DB_PROVIDER=mysql in .env, then:
+# Set DB_PROVIDER=mysql in ..env, then:
 DB_PROVIDER=mysql docker compose --profile mysql up -d
 ```
 
 ### Option 3: Your own MySQL
 
 ```bash
-# Configure DB host, user, password in .env, then:
+# Configure DB host, user, password in ..env, then:
 DB_PROVIDER=mysql docker compose up -d
 ```
 

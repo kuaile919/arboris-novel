@@ -4,6 +4,7 @@
 import logging
 from logging.config import dictConfig
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,10 @@ from .services.prompt_service import PromptService
 from .db.session import AsyncSessionLocal
 from .api.routers import api_router
 
+# 确保日志目录存在
+LOG_DIR = Path(__file__).parent.parent / "storage" / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "app.log"
 
 dictConfig(
     {
@@ -22,44 +27,55 @@ dictConfig(
         "formatters": {
             "default": {
                 "format": "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+            },
+            "detailed": {
+                "format": "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d - %(message)s",
             }
         },
         "handlers": {
             "console": {
                 "class": "logging.StreamHandler",
                 "formatter": "default",
+            },
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "formatter": "detailed",
+                "filename": str(LOG_FILE),
+                "maxBytes": 10485760,  # 10MB
+                "backupCount": 5,
+                "encoding": "utf-8",
             }
         },
         "loggers": {
             "backend": {
                 "level": settings.logging_level,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "app": {
                 "level": settings.logging_level,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "backend.app": {
                 "level": settings.logging_level,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "backend.api": {
                 "level": settings.logging_level,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
             "backend.services": {
                 "level": settings.logging_level,
-                "handlers": ["console"],
+                "handlers": ["console", "file"],
                 "propagate": False,
             },
         },
         "root": {
-            "level": "WARNING",
-            "handlers": ["console"],
+            "level": "DEBUG",
+            "handlers": ["console", "file"],
         },
     }
 )

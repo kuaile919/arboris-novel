@@ -137,6 +137,38 @@ export interface ChapterGenerationResponse {
   chapter_number: number
 }
 
+export interface ChapterOutlineConverseResponse {
+  ai_message: string
+  proposed_outline?: {
+    title: string
+    summary: string
+  }
+}
+
+export interface OutlineChapterPreview {
+  chapter_number: number
+  title: string
+  summary: string
+  narrative_phase?: string
+  story_progress?: string
+  foreshadowing?: {
+    plant: string[]
+    payoff: string[]
+  }
+  emotion_hook?: string
+}
+
+export interface OutlinePreviewResponse {
+  chapters: OutlineChapterPreview[]
+  new_characters: any[]
+  new_relationships: any[]
+  new_locations: any[]
+  new_factions: any[]
+  foreshadowing_plants: { chapter_number: number; content: string }[]
+  foreshadowing_payoffs: { chapter_number: number; content: string }[]
+  ai_message?: string
+}
+
 export interface DeleteNovelsResponse {
   status: string
   message: string
@@ -270,6 +302,22 @@ export class NovelAPI {
     })
   }
 
+  static async converseChapterOutline(
+    projectId: string,
+    chapterNumber: number,
+    userMessage: string,
+    conversationHistory: Array<{ role: string; content: string }> = []
+  ): Promise<ChapterOutlineConverseResponse> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline-converse`, {
+      method: 'POST',
+      body: JSON.stringify({
+        chapter_number: chapterNumber,
+        user_message: userMessage,
+        conversation_history: conversationHistory
+      })
+    })
+  }
+
   static async deleteChapter(
     projectId: string,
     chapterNumbers: number[]
@@ -283,13 +331,47 @@ export class NovelAPI {
   static async generateChapterOutline(
     projectId: string,
     startChapter: number,
-    numChapters: number
+    numChapters: number,
+    userHint?: string
   ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/outline`, {
       method: 'POST',
       body: JSON.stringify({
         start_chapter: startChapter,
-        num_chapters: numChapters
+        num_chapters: numChapters,
+        user_hint: userHint || null
+      })
+    })
+  }
+
+  static async previewChapterOutline(
+    projectId: string,
+    startChapter: number,
+    numChapters: number,
+    userHint?: string,
+    totalChapters?: number
+  ): Promise<OutlinePreviewResponse> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline/preview`, {
+      method: 'POST',
+      body: JSON.stringify({
+        start_chapter: startChapter,
+        num_chapters: numChapters,
+        user_hint: userHint || null,
+        total_chapters: totalChapters || null
+      })
+    })
+  }
+
+  static async confirmChapterOutline(
+    projectId: string,
+    startChapter: number,
+    previewData: Record<string, any>
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({
+        start_chapter: startChapter,
+        preview_data: previewData
       })
     })
   }

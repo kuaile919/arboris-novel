@@ -66,7 +66,7 @@ if [ ! -f ".env" ]; then
     echo -e "${RED}错误：未找到 .env 文件${NC}"
     exit 1
 fi
-source .env
+source ..env
 
 # 数据库连接信息
 DB_HOST="${MYSQL_HOST:-localhost}"

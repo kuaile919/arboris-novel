@@ -421,7 +421,7 @@ class NovelService:
         await self.session.flush()
         return outline
 
-    async def get_or_create_chapter(self, project_id: str, chapter_number: int) -> Chapter:
+    async def get_or_create_chapter(self, project_id: str, chapter_number: int, auto_commit: bool = True) -> Chapter:
         stmt = (
             select(Chapter)
             .options(selectinload(Chapter.selected_version))
@@ -436,8 +436,12 @@ class NovelService:
             return chapter
         chapter = Chapter(project_id=project_id, chapter_number=chapter_number)
         self.session.add(chapter)
-        await self.session.commit()
-        await self.session.refresh(chapter)
+        if auto_commit:
+            await self.session.commit()
+            await self.session.refresh(chapter)
+        else:
+            await self.session.flush()
+            await self.session.refresh(chapter)
         return chapter
 
     async def replace_chapter_versions(self, chapter: Chapter, contents: List[str], metadata: Optional[List[Dict]] = None) -> List[ChapterVersion]:
@@ -481,12 +485,20 @@ class NovelService:
         await self._touch_project(chapter.project_id)
         return selected
 
-    async def add_chapter_evaluation(self, chapter: Chapter, version: Optional[ChapterVersion], feedback: str, decision: Optional[str] = None) -> None:
+    async def add_chapter_evaluation(
+        self,
+        chapter: Chapter,
+        version: Optional[ChapterVersion],
+        feedback: str,
+        decision: Optional[str] = None,
+        score: Optional[float] = None,
+    ) -> None:
         evaluation = ChapterEvaluation(
             chapter_id=chapter.id,
             version_id=version.id if version else None,
             feedback=feedback,
             decision=decision,
+            score=score,
         )
         self.session.add(evaluation)
         chapter.status = ChapterGenerationStatus.WAITING_FOR_CONFIRM.value
@@ -507,6 +519,94 @@ class NovelService:
                 ChapterOutline.chapter_number.in_(list(chapter_numbers)),
             )
         )
+        await self.session.commit()
+        await self._touch_project(project_id)
+
+    async def update_blueprint_characters(self, project_id: str, characters: List) -> None:
+        """更新蓝图中的角色列表"""
+        project = await self.repo.get_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="项目不存在")
+
+        # 删除现有角色
+        await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
+
+        # 添加新角色 - 支持字典和Pydantic模型
+        for index, char in enumerate(characters):
+            # 兼容字典和Pydantic模型
+            if hasattr(char, "model_dump"):
+                data = char.model_dump()
+            elif hasattr(char, "dict"):
+                data = char.dict()
+            elif isinstance(char, dict):
+                data = char
+            else:
+                data = {}
+
+            # 将 description 和 first_appear_chapter 等非标准字段存入 extra
+            standard_fields = {"name", "identity", "personality", "goals", "abilities", "relationship_to_protagonist"}
+            extra = {k: v for k, v in data.items() if k not in standard_fields}
+
+            self.session.add(
+                BlueprintCharacter(
+                    project_id=project_id,
+                    name=data.get("name", ""),
+                    identity=data.get("identity"),
+                    personality=data.get("personality"),
+                    goals=data.get("goals"),
+                    abilities=data.get("abilities"),
+                    relationship_to_protagonist=data.get("relationship_to_protagonist"),
+                    extra=extra if extra else None,
+                    position=index,
+                )
+            )
+
+        await self.session.commit()
+        await self._touch_project(project_id)
+
+    async def update_blueprint_relationships(self, project_id: str, relationships: List) -> None:
+        """更新蓝图中的关系列表"""
+        project = await self.repo.get_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="项目不存在")
+
+        # 删除现有关系
+        await self.session.execute(delete(BlueprintRelationship).where(BlueprintRelationship.project_id == project_id))
+
+        # 添加新关系 - 支持字典和Pydantic模型
+        for index, relation in enumerate(relationships):
+            # 兼容字典和Pydantic模型
+            if hasattr(relation, "model_dump"):
+                rel_dict = relation.model_dump()
+            elif hasattr(relation, "dict"):
+                rel_dict = relation.dict()
+            elif isinstance(relation, dict):
+                rel_dict = relation
+            else:
+                rel_dict = {}
+
+            self.session.add(
+                BlueprintRelationship(
+                    project_id=project_id,
+                    character_from=rel_dict.get("character_from") or rel_dict.get("from", ""),
+                    character_to=rel_dict.get("character_to") or rel_dict.get("to", ""),
+                    description=rel_dict.get("description"),
+                    position=index,
+                )
+            )
+
+        await self.session.commit()
+        await self._touch_project(project_id)
+
+    async def update_blueprint_world_setting(self, project_id: str, world_setting: Dict[str, Any]) -> None:
+        """更新蓝图中的世界设定"""
+        blueprint = await self.session.get(NovelBlueprint, project_id)
+        if not blueprint:
+            # 如果蓝图不存在，创建一个新的
+            blueprint = NovelBlueprint(project_id=project_id)
+            self.session.add(blueprint)
+
+        blueprint.world_setting = world_setting
         await self.session.commit()
         await self._touch_project(project_id)
 
@@ -734,8 +834,10 @@ class NovelService:
                         for v in sorted(chapter.versions, key=lambda item: item.created_at)
                     ]
                 if chapter.evaluations:
-                    latest = sorted(chapter.evaluations, key=lambda item: item.created_at)[-1]
-                    evaluation_text = latest.feedback or latest.decision
+                    # 返回最新的评审结果（多版本对比评审的完整 JSON）
+                    # 所有版本的评审结果相同，取最新的即可
+                    latest_evaluation = max(chapter.evaluations, key=lambda item: item.created_at)
+                    evaluation_text = latest_evaluation.feedback if latest_evaluation.feedback else None
 
         return ChapterSchema(
             chapter_number=chapter_number,

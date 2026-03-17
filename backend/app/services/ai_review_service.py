@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 from ..services.llm_service import LLMService
 from ..services.prompt_service import PromptService
-from ..utils.json_utils import remove_think_tags, unwrap_markdown_json
+from ..utils.json_utils import remove_think_tags, unwrap_markdown_json, sanitize_json_like_text
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +95,10 @@ class AIReviewService:
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
-            
-            result = self._parse_review_response(normalized)
+            # 清理可能的 JSON 格式错误（如未转义的引号、换行等）
+            sanitized = sanitize_json_like_text(normalized)
+
+            result = self._parse_review_response(sanitized)
             result.raw_response = cleaned
             
             logger.info(
