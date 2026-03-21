@@ -199,6 +199,7 @@ class UpdateChapterOutlineRequest(BaseModel):
     chapter_number: int
     title: str
     summary: str
+    ai_message: Optional[str] = Field(default=None, description="AI对话中给出的建议，将提炼为规则追加到提示词文件中")
 
 
 class DeleteChapterRequest(BaseModel):

@@ -10,7 +10,7 @@
     </div>
 
     <!-- 优化维度选择 -->
-    <div class="grid grid-cols-2 gap-3 mb-4">
+    <div v-if="!showDiffView" class="grid grid-cols-2 gap-3 mb-4">
       <button
         v-for="dimension in dimensions"
         :key="dimension.id"
@@ -31,7 +31,7 @@
     </div>
 
     <!-- 优化说明 -->
-    <div v-if="selectedDimension" class="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+    <div v-if="selectedDimension && !showDiffView" class="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
       <h4 class="font-medium text-blue-800 mb-2">{{ currentDimension?.name }}优化要点</h4>
       <ul class="text-sm text-blue-700 space-y-1">
         <li v-for="(point, index) in currentDimension?.points" :key="index" class="flex items-start gap-2">
@@ -42,7 +42,7 @@
     </div>
 
     <!-- 额外指令 -->
-    <div class="mb-4">
+    <div v-if="!showDiffView" class="mb-4">
       <label class="block text-sm font-medium text-gray-700 mb-2">额外优化指令 (可选)</label>
       <textarea
         v-model="additionalNotes"
@@ -53,7 +53,7 @@
     </div>
 
     <!-- 操作按钮 -->
-    <div class="flex gap-3">
+    <div v-if="!showDiffView" class="flex gap-3">
       <button
         @click="startOptimization"
         :disabled="!selectedDimension || isOptimizing"
@@ -78,8 +78,38 @@
       </button>
     </div>
 
+    <!-- 文本对比视图 -->
+    <div v-if="showDiffView" class="diff-view-container">
+      <TextDiffViewer
+        :original-text="originalContent"
+        :optimized-text="optimizedContent"
+      />
+
+      <!-- 优化说明 -->
+      <div v-if="optimizationNotes" class="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+        <h4 class="font-medium text-blue-800 mb-2">优化说明</h4>
+        <p class="text-sm text-blue-700 whitespace-pre-wrap">{{ optimizationNotes }}</p>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div class="flex gap-3 mt-4">
+        <button
+          @click="applyOptimization"
+          class="flex-1 py-3 px-4 rounded-lg font-medium bg-green-500 text-white hover:bg-green-600 shadow-md transition-all"
+        >
+          应用优化
+        </button>
+        <button
+          @click="rejectOptimization"
+          class="px-6 py-3 rounded-lg font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-all"
+        >
+          放弃优化
+        </button>
+      </div>
+    </div>
+
     <!-- 优化历史 -->
-    <div v-if="optimizationHistory.length > 0" class="mt-6 pt-4 border-t border-gray-200">
+    <div v-if="optimizationHistory.length > 0 && !showDiffView" class="mt-6 pt-4 border-t border-gray-200">
       <h4 class="text-sm font-medium text-gray-700 mb-3">优化历史</h4>
       <div class="space-y-2">
         <div
@@ -106,6 +136,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import TextDiffViewer from './TextDiffViewer.vue';
 
 interface Dimension {
   id: string;
@@ -132,11 +163,15 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['optimize', 'cancel', 'revert']);
+const emit = defineEmits(['optimize', 'cancel', 'revert', 'apply', 'reject']);
 
 const selectedDimension = ref<string | null>(null);
 const additionalNotes = ref('');
 const isOptimizing = ref(false);
+const showDiffView = ref(false);
+const originalContent = ref('');
+const optimizedContent = ref('');
+const optimizationNotes = ref('');
 
 const dimensions: Dimension[] = [
   {
@@ -176,6 +211,18 @@ const dimensions: Dimension[] = [
     ]
   },
   {
+    id: 'logic',
+    name: '逻辑优化',
+    icon: '🔗',
+    description: '优化情节逻辑，消除前后矛盾',
+    points: [
+      '情节发展符合因果逻辑',
+      '角色行为动机合理',
+      '时间线和空间关系清晰',
+      '消除前后矛盾和逻辑漏洞'
+    ]
+  },
+  {
     id: 'rhythm',
     name: '节奏韵律',
     icon: '🎵',
@@ -207,17 +254,41 @@ const getDimensionName = (id: string) => {
 
 const startOptimization = async () => {
   if (!selectedDimension.value) return;
-  
+
   isOptimizing.value = true;
-  
+  originalContent.value = props.chapterContent;
+
   emit('optimize', {
     dimension: selectedDimension.value,
     additionalNotes: additionalNotes.value,
     originalContent: props.chapterContent
   });
-  
+
   // 实际优化逻辑由父组件处理
   // isOptimizing 状态由父组件在完成后重置
+};
+
+const applyOptimization = () => {
+  emit('apply', {
+    optimizedContent: optimizedContent.value,
+    dimension: selectedDimension.value
+  });
+  resetView();
+};
+
+const rejectOptimization = () => {
+  emit('reject');
+  resetView();
+};
+
+const resetView = () => {
+  showDiffView.value = false;
+  selectedDimension.value = null;
+  additionalNotes.value = '';
+  isOptimizing.value = false;
+  originalContent.value = '';
+  optimizedContent.value = '';
+  optimizationNotes.value = '';
 };
 
 // 暴露方法给父组件
@@ -225,10 +296,15 @@ defineExpose({
   setOptimizing: (value: boolean) => {
     isOptimizing.value = value;
   },
-  reset: () => {
-    selectedDimension.value = null;
-    additionalNotes.value = '';
+  showDiff: (original: string, optimized: string, notes: string) => {
+    originalContent.value = original;
+    optimizedContent.value = optimized;
+    optimizationNotes.value = notes;
+    showDiffView.value = true;
     isOptimizing.value = false;
+  },
+  reset: () => {
+    resetView();
   }
 });
 </script>

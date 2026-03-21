@@ -149,10 +149,12 @@
               <component
                 v-else
                 :is="currentComponent"
+                :key="activeSection"
                 v-bind="componentProps"
                 :class="componentContainerClass"
                 @edit="handleSectionEdit"
                 @add="startAddChapter"
+                @synced="handleWorldSettingSynced"
               />
             </div>
           </div>
@@ -398,8 +400,11 @@ const contentCardClass = computed(() => {
 // 懒加载完整项目（仅在需要编辑时）
 const ensureProjectLoaded = async () => {
   if (props.isAdmin || !projectId) return
-  if (novel.value) return // 已加载
+  if (novel.value?.id === projectId) return
   await novelStore.loadProject(projectId)
+  if (novel.value?.id !== projectId) {
+    throw new Error(`Project context mismatch: expected ${projectId}, got ${novel.value?.id ?? 'null'}`)
+  }
 }
 
 const toggleSidebar = () => {
@@ -430,7 +435,8 @@ const loadSection = async (section: SectionKey, force = false) => {
     const response: NovelSectionResponse = props.isAdmin
       ? await AdminAPI.getNovelSection(projectId, section as NovelSectionType)
       : await NovelAPI.getSection(projectId, section as NovelSectionType)
-    sectionData[section] = response.data
+    // 拷贝数据，避免子组件意外改写响应对象
+    sectionData[section] = { ...response.data }
     if (section === 'overview') {
       overviewMeta.title = response.data?.title || overviewMeta.title
       overviewMeta.updated_at = response.data?.updated_at || null
@@ -445,6 +451,10 @@ const loadSection = async (section: SectionKey, force = false) => {
 
 const reloadSection = (section: SectionKey, force = false) => {
   loadSection(section, force)
+}
+
+const handleWorldSettingSynced = async () => {
+  await reloadSection('world_setting', true)
 }
 
 const switchSection = (section: SectionKey) => {
@@ -477,11 +487,17 @@ const componentProps = computed(() => {
     case 'overview':
       return { data: data || null, editable }
     case 'world_setting':
-      return { data: data || null, editable }
+      return { data: data || null, editable, projectId: route.params.id }
     case 'characters':
       return { data: data || null, editable }
     case 'relationships':
-      return { data: data || null, editable }
+      return {
+        data: {
+          relationships: data?.relationships || [],
+          characters: sectionData.characters?.characters || []
+        },
+        editable
+      }
     case 'chapter_outline':
       return { outline: data?.chapter_outline || [], editable }
     case 'chapters':
@@ -500,6 +516,7 @@ const handleSectionEdit = (payload: { field: string; title: string; value: any }
 }
 
 const resolveSectionKey = (field: string): SectionKey => {
+  if (field === 'key_locations' || field === 'factions') return 'world_setting'
   if (field.startsWith('world_setting')) return 'world_setting'
   if (field.startsWith('characters')) return 'characters'
   if (field.startsWith('relationships')) return 'relationships'
@@ -511,22 +528,36 @@ const handleSave = async (data: { field: string; content: any }) => {
   if (props.isAdmin) return
   await ensureProjectLoaded()
   const project = novel.value
-  if (!project) return
+  if (!project || project.id !== projectId) return
 
   const { field, content } = data
-  const payload: Record<string, any> = {}
 
-  if (field.includes('.')) {
-    const [parentField, childField] = field.split('.')
-    payload[parentField] = {
-      ...(project.blueprint?.[parentField as keyof typeof project.blueprint] as Record<string, any> | undefined),
-      [childField]: content
-    }
-  } else {
-    payload[field] = content
-  }
-
+  // key_locations and factions now live in their own tables
   try {
+    if (field === 'key_locations') {
+      await NovelAPI.replaceKeyLocations(project.id, Array.isArray(content) ? content : [])
+      await loadSection('world_setting', true)
+      isModalOpen.value = false
+      return
+    }
+    if (field === 'factions') {
+      await NovelAPI.replaceFactions(project.id, Array.isArray(content) ? content : [])
+      await loadSection('world_setting', true)
+      isModalOpen.value = false
+      return
+    }
+
+    const payload: Record<string, any> = {}
+    if (field.includes('.')) {
+      const [parentField, childField] = field.split('.')
+      payload[parentField] = {
+        ...(project.blueprint?.[parentField as keyof typeof project.blueprint] as Record<string, any> | undefined),
+        [childField]: content
+      }
+    } else {
+      payload[field] = content
+    }
+
     const updatedProject = await NovelAPI.updateBlueprint(project.id, payload)
     novelStore.setCurrentProject(updatedProject)
     const sectionToReload = resolveSectionKey(field)

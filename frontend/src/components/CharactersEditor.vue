@@ -33,6 +33,13 @@
           <label class="block text-sm font-medium text-gray-600 mb-1">与主角关系</label>
           <input type="text" v-model="character.relationship_to_protagonist" class="w-full p-1 border-b-2 border-gray-300 focus:border-indigo-500 outline-none transition bg-transparent" />
         </div>
+        <div class="flex items-center">
+          <label class="inline-flex items-center cursor-pointer">
+            <input type="checkbox" v-model="character.is_protagonist" class="sr-only peer" />
+            <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+            <span class="ml-3 text-sm font-medium text-gray-700">主角</span>
+          </label>
+        </div>
       </div>
     </div>
     <button @click="addCharacter" class="w-full mt-4 px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -51,6 +58,7 @@ interface Character {
   goals: string;
   abilities: string;
   relationship_to_protagonist: string;
+  is_protagonist: boolean;
 }
 
 const props = defineProps({
@@ -79,13 +87,14 @@ watch(localCharacters, (newVal) => {
 }, { deep: true });
 
 const addCharacter = () => {
-  localCharacters.value.push({ 
-    name: '', 
-    identity: '', 
-    personality: '', 
-    goals: '', 
-    abilities: '', 
-    relationship_to_protagonist: '' 
+  localCharacters.value.push({
+    name: '',
+    identity: '',
+    personality: '',
+    goals: '',
+    abilities: '',
+    relationship_to_protagonist: '',
+    is_protagonist: false
   });
 };
 

@@ -627,16 +627,31 @@ async def generate_chapter(
     # 构建禁止角色列表
     forbidden_text = json.dumps(forbidden_characters, ensure_ascii=False) if forbidden_characters else "无"
 
+    # 构建衔接提示
+    if previous_tail_excerpt and previous_tail_excerpt != "暂无（这是第一章）":
+        continuity_hint = f"""**【核心红线：章节衔接】**
+上一章结尾是：
+{previous_tail_excerpt}
+
+本章开头必须从上一章结尾的最后一句话/动作/对话直接延续，不得重新起笔。
+- 如果上一章结尾是对话（如例子中的"为什么？"），本章开头必须接着这句对话，写对方的回答或反应
+- 如果上一章结尾是动作，本章开头接着动作的后续或结果
+- 如果上一章结尾是悬念，本章开头立即揭示或推进
+- 绝对禁止用「疼痛」「黑暗」「他醒来」「这是XX的第一个感觉」等重置式开场
+- 让读者感觉是同一个连续故事，没有时间跳跃或场景重置"""
+    else:
+        continuity_hint = "这是第一章，可以用感官冲击开场。"
+
     prompt_sections = [
         ("[世界蓝图](JSON，已裁剪)", blueprint_text),
         ("[上一章摘要]", previous_summary_text or "暂无（这是第一章）"),
-        ("[上一章结尾]", previous_tail_excerpt or "暂无（这是第一章）"),
+        ("[章节衔接要求]", continuity_hint),
         ("[章节导演脚本](JSON)", mission_text),
         ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
         ("[检索到的章节摘要](Markdown)", rag_summaries_text),
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
         ("[禁止角色](本章不允许提及)", forbidden_text),
-        ("[字数要求]", "本章节正文必须在 3000-4000 字之间。请确保内容充实、细节丰富，避免空洞或过于简略的描写。"),
+        ("[字数要求]", "本章节正文字数必须严格控制在 3000-4000 字之间。超过 4000 字或低于 3000 字均不符合要求。在心里将全章分为「开场(约800字)→发展(约1500字)→转折(约1000字)→钩子(约400字)」四段，每段写完后心算累计字数，到达 3500 字时立即进入钩子收尾，绝不继续展开新内容。注意：这只是心理规划，绝对不要在正文中写出「**【开场】**」「**【发展】**」等结构标记。"),
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug("章节写作提示词长度: %s 字符", len(prompt_input))
@@ -657,7 +672,7 @@ async def generate_chapter(
                 user_id=current_user.id,
                 timeout=600.0,
                 response_format=None,
-                max_tokens=5500,  # 3000-4000 字中文约需 3000-4000 tokens，5500 为安全上限
+                max_tokens=5500,  # 目标 3000-4000 字，中文约 1.5 字/token，5500 为硬限制（强制模型在 4000 字内收尾）
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
@@ -791,12 +806,28 @@ async def generate_chapter(
             contents.append(str(variant))
             metadata.append({"raw": variant})
 
-    # 字数验证日志
+    # 字数验证与截断
+    TARGET_MAX = 4000
     for i, content in enumerate(contents):
         word_count = len(content)
-        if word_count < 3000 or word_count > 4000:
+        if word_count > TARGET_MAX:
+            # 在段落边界截断，避免截断到句子中间
+            truncated = content[:TARGET_MAX]
+            last_para = truncated.rfind("\n\n")
+            last_newline = truncated.rfind("\n")
+            cut_pos = last_para if last_para > TARGET_MAX * 0.85 else (last_newline if last_newline > TARGET_MAX * 0.85 else TARGET_MAX)
+            contents[i] = content[:cut_pos].rstrip()
             logger.warning(
-                "项目 %s 第 %s 章版本 %s 字数不符合要求: %s 字（目标: 3000-4000 字）",
+                "项目 %s 第 %s 章版本 %s 字数超出上限: %s 字，已截断至 %s 字",
+                project_id,
+                request.chapter_number,
+                i + 1,
+                word_count,
+                len(contents[i]),
+            )
+        elif word_count < 3000:
+            logger.warning(
+                "项目 %s 第 %s 章版本 %s 字数不足: %s 字（目标: 3500-4000 字）",
                 project_id,
                 request.chapter_number,
                 i + 1,
@@ -1080,6 +1111,53 @@ async def update_chapter_outline(
     outline.title = request.title
     outline.summary = request.summary
     await session.commit()
+
+    # 如果提供了 AI 建议，将其提炼为规则并追加到提示词文件中
+    if request.ai_message and request.ai_message.strip():
+        try:
+            prompt_service = PromptService(session)
+            llm_service = LLMService(session)
+
+            # 调用 LLM 将 AI 建议提炼为简洁的规则
+            extract_prompt = f"""请将以下关于小说大纲生成的建议提炼为一条简洁、通用的规则。
+
+要求：
+1. 规则应该是通用的，适用于所有小说大纲生成场景
+2. 规则应该简洁明了，不超过100字
+3. 规则应该以"应该"或"必须"开头
+4. 去除具体的章节号、角色名等特定信息
+
+AI建议内容：
+{request.ai_message.strip()}
+
+请直接输出提炼后的规则，不要有任何前缀或解释。"""
+
+            extracted_rule = await llm_service.generate(
+                prompt=extract_prompt,
+                system_prompt="你是一个规则提炼专家，擅长从具体建议中提取通用规则。",
+                temperature=0.3,
+                max_tokens=200
+            )
+
+            if extracted_rule and extracted_rule.strip():
+                # 格式化为规则块
+                rule_content = f"""
+
+---
+
+## 用户反馈规则（自动添加）
+
+{extracted_rule.strip()}
+"""
+                # 追加到 outline_generation 提示词
+                success = await prompt_service.append_to_prompt("outline_generation", rule_content)
+                if success:
+                    logger.info(f"已将 AI 建议提炼为规则并追加到 outline_generation 提示词")
+                else:
+                    logger.warning(f"追加规则到 outline_generation 提示词失败")
+        except Exception as e:
+            logger.error(f"处理 AI 建议时出错: {str(e)}")
+            # 不影响主流程，继续返回
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 

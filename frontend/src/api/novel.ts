@@ -82,6 +82,7 @@ export interface Character {
   goals?: string
   abilities?: string
   relationship_to_protagonist?: string
+  is_protagonist?: boolean
 }
 
 export interface ChapterOutline {
@@ -172,6 +173,14 @@ export interface OutlinePreviewResponse {
 export interface DeleteNovelsResponse {
   status: string
   message: string
+}
+
+export interface SyncWorldSettingResult {
+  new_locations: Array<{ name: string; description: string }>
+  new_factions: Array<{ name: string; description: string }>
+  total_locations: number
+  total_factions: number
+  added_count: number
 }
 
 // 内容型Section（对应后端NovelSectionType枚举）
@@ -294,11 +303,15 @@ export class NovelAPI {
 
   static async updateChapterOutline(
     projectId: string,
-    chapterOutline: ChapterOutline
+    chapterOutline: ChapterOutline,
+    aiMessage?: string
   ): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/update-outline`, {
       method: 'POST',
-      body: JSON.stringify(chapterOutline)
+      body: JSON.stringify({
+        ...chapterOutline,
+        ai_message: aiMessage || null
+      })
     })
   }
 
@@ -383,6 +396,29 @@ export class NovelAPI {
     })
   }
 
+  /**
+   * 同步世界设定（从章节大纲和摘要中提取地点和阵营）
+   */
+  static async syncWorldSetting(projectId: string): Promise<SyncWorldSettingResult> {
+    return request(`${API_BASE_URL}/api/projects/${projectId}/world-setting/sync`, {
+      method: 'POST'
+    })
+  }
+
+  static async replaceKeyLocations(projectId: string, items: any[]): Promise<any> {
+    return request(`${API_BASE_URL}/api/projects/${projectId}/key-locations/replace-all`, {
+      method: 'PUT',
+      body: JSON.stringify(items)
+    })
+  }
+
+  static async replaceFactions(projectId: string, items: any[]): Promise<any> {
+    return request(`${API_BASE_URL}/api/projects/${projectId}/factions/replace-all`, {
+      method: 'PUT',
+      body: JSON.stringify(items)
+    })
+  }
+
   static async editChapterContent(
     projectId: string,
     chapterNumber: number,
@@ -414,7 +450,7 @@ export interface EmotionBeat {
 export interface OptimizeRequest {
   project_id: string
   chapter_number: number
-  dimension: 'dialogue' | 'environment' | 'psychology' | 'rhythm'
+  dimension: 'dialogue' | 'environment' | 'psychology' | 'logic' | 'rhythm'
   additional_notes?: string
 }
 
@@ -422,6 +458,29 @@ export interface OptimizeResponse {
   optimized_content: string
   optimization_notes: string
   dimension: string
+}
+
+export interface StartOptimizeResponse {
+  task_id: string
+  status: string
+  message: string
+}
+
+export interface OptimizeTaskStatusResponse {
+  task_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | string
+  dimension: string
+  project_id: string
+  chapter_number: number
+  original_content?: string | null
+  optimized_content?: string | null
+  optimization_notes?: string | null
+  error_message?: string | null
+}
+
+export interface SummaryResponse {
+  summary: string | null
+  has_summary: boolean
 }
 
 // 优化API
@@ -435,6 +494,41 @@ export class OptimizerAPI {
     return request(`${OPTIMIZER_BASE}/optimize`, {
       method: 'POST',
       body: JSON.stringify(optimizeReq)
+    })
+  }
+
+  /**
+   * 异步启动章节优化任务
+   */
+  static async optimizeChapterAsync(optimizeReq: OptimizeRequest): Promise<StartOptimizeResponse> {
+    return request(`${OPTIMIZER_BASE}/optimize-async`, {
+      method: 'POST',
+      body: JSON.stringify(optimizeReq)
+    })
+  }
+
+  /**
+   * 查询优化任务状态
+   */
+  static async getOptimizeTaskStatus(taskId: string): Promise<OptimizeTaskStatusResponse> {
+    return request(`${OPTIMIZER_BASE}/optimize-task/${taskId}`, {
+      method: 'GET'
+    })
+  }
+
+  /**
+   * 获取章节最近一次优化结果（含进行中状态）
+   */
+  static async getLatestOptimizationResult(
+    projectId: string,
+    chapterNumber: number
+  ): Promise<OptimizeTaskStatusResponse> {
+    const params = new URLSearchParams({
+      project_id: projectId,
+      chapter_number: chapterNumber.toString()
+    })
+    return request(`${OPTIMIZER_BASE}/latest-optimization-result?${params}`, {
+      method: 'GET'
     })
   }
 
@@ -453,6 +547,70 @@ export class OptimizerAPI {
     })
     return request(`${OPTIMIZER_BASE}/apply-optimization?${params}`, {
       method: 'POST'
+    })
+  }
+
+  /**
+   * 获取章节摘要
+   */
+  static async getChapterSummary(
+    projectId: string,
+    chapterNumber: number
+  ): Promise<SummaryResponse> {
+    return request(`${OPTIMIZER_BASE}/summary/${projectId}/${chapterNumber}`, {
+      method: 'GET'
+    })
+  }
+
+  /**
+   * 立即生成章节摘要并入向量库
+   */
+  static async generateChapterSummary(
+    projectId: string,
+    chapterNumber: number
+  ): Promise<{ status: string; message: string }> {
+    const params = new URLSearchParams({
+      project_id: projectId,
+      chapter_number: chapterNumber.toString()
+    })
+    return request(`${OPTIMIZER_BASE}/generate-summary?${params}`, {
+      method: 'POST'
+    })
+  }
+
+  /**
+   * 更新章节摘要
+   */
+  static async updateChapterSummary(
+    projectId: string,
+    chapterNumber: number,
+    summary: string
+  ): Promise<{ status: string; message: string }> {
+    return request(`${OPTIMIZER_BASE}/summary`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        project_id: projectId,
+        chapter_number: chapterNumber,
+        summary: summary
+      })
+    })
+  }
+
+  /**
+   * 将优化经验追加到写作风格库
+   */
+  static async appendWritingStyle(
+    dimension: string,
+    additionalNotes: string,
+    optimizationNotes: string
+  ): Promise<{ status: string; message: string; summary: string }> {
+    return request(`${OPTIMIZER_BASE}/append-style`, {
+      method: 'POST',
+      body: JSON.stringify({
+        dimension,
+        additional_notes: additionalNotes,
+        optimization_notes: optimizationNotes
+      })
     })
   }
 }

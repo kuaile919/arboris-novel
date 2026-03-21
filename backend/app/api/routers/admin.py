@@ -258,6 +258,103 @@ async def delete_prompt(
     logger.info("管理员删除提示词：%s", prompt_id)
 
 
+@router.post("/prompts/sync", status_code=status.HTTP_200_OK)
+async def sync_prompts_from_files(
+    service: PromptService = Depends(get_prompt_service),
+    _: None = Depends(get_current_admin),
+):
+    """
+    从 backend/prompts/ 目录同步所有 .md 文件到数据库
+    """
+    from pathlib import Path
+
+    # 获取 prompts 目录路径
+    prompts_dir = Path(__file__).parent.parent.parent.parent / "prompts"
+
+    if not prompts_dir.exists():
+        logger.error("prompts 目录不存在: %s", prompts_dir)
+        raise HTTPException(status_code=404, detail="prompts 目录不存在")
+
+    # 扫描所有 .md 文件
+    md_files = list(prompts_dir.glob("*.md"))
+
+    if not md_files:
+        logger.warning("prompts 目录下没有找到 .md 文件")
+        return {
+            "status": "success",
+            "message": "没有找到需要同步的提示词文件",
+            "synced": 0,
+            "updated": 0,
+            "created": 0
+        }
+
+    created_count = 0
+    updated_count = 0
+    errors = []
+
+    for md_file in md_files:
+        try:
+            # 读取文件内容
+            with open(md_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # 文件名作为 name（去掉 .md 后缀）
+            name = md_file.stem
+
+            # 尝试从文件内容第一行提取标题（如果是 # 开头）
+            lines = content.strip().split("\n")
+            title = None
+            if lines and lines[0].startswith("# "):
+                title = lines[0][2:].strip()
+
+            # 检查是否已存在
+            existing = await service.repo.get_by_name(name)
+
+            if existing:
+                # 更新现有提示词
+                from ...schemas.prompt import PromptUpdate
+                update_payload = PromptUpdate(
+                    title=title,
+                    content=content
+                )
+                await service.update_prompt(existing.id, update_payload)
+                updated_count += 1
+                logger.info("更新提示词: %s", name)
+            else:
+                # 创建新提示词
+                from ...schemas.prompt import PromptCreate
+                create_payload = PromptCreate(
+                    name=name,
+                    title=title or name,
+                    content=content,
+                    tags=None
+                )
+                await service.create_prompt(create_payload)
+                created_count += 1
+                logger.info("创建提示词: %s", name)
+
+        except Exception as exc:
+            error_msg = f"处理文件 {md_file.name} 失败: {str(exc)}"
+            logger.error(error_msg, exc_info=exc)
+            errors.append(error_msg)
+
+    logger.info(
+        "管理员同步提示词完成: 创建=%s, 更新=%s, 错误=%s",
+        created_count,
+        updated_count,
+        len(errors)
+    )
+
+    return {
+        "status": "success" if not errors else "partial",
+        "message": f"同步完成：创建 {created_count} 个，更新 {updated_count} 个" + (f"，{len(errors)} 个失败" if errors else ""),
+        "synced": len(md_files),
+        "created": created_count,
+        "updated": updated_count,
+        "errors": errors if errors else None
+    }
+
+
 @router.get("/update-logs", response_model=List[UpdateLogRead])
 async def list_update_logs(
     service: UpdateLogService = Depends(get_update_log_service),

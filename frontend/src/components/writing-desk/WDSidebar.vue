@@ -181,7 +181,13 @@
                       >
                         待选择版本
                       </span>
-                      <span v-else class="md-chip md-chip-assist">未开始</span>
+                      <span
+                        v-else
+                        class="md-chip"
+                        style="background-color: var(--md-surface-container-highest); color: var(--md-on-surface-variant);"
+                      >
+                        未开始
+                      </span>
                     </div>
                   </div>
 

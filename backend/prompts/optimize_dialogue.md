@@ -52,28 +52,19 @@
 
 ## 输入格式
 
-```json
-{
-  "original_content": "需要优化的章节内容",
-  "characters": [
-    {
-      "name": "角色名",
-      "personality": "性格特点",
-      "speech_habits": "说话习惯（如有）"
-    }
-  ],
-  "scene_emotion": "场景的情绪基调"
-}
-```
+你将收到一个 JSON 对象，包含：
+- original_content: 需要优化的章节内容
+- additional_notes: 用户的额外优化指令
+- length_constraint: 字数限制要求
 
 ## 输出格式
 
-```json
+**重要**：直接输出 JSON 对象，不要使用 markdown 代码块包裹。
+
 {
   "optimized_content": "优化后的完整章节内容",
   "optimization_notes": "优化说明，列出主要改动点"
 }
-```
 
 ## 注意事项
 

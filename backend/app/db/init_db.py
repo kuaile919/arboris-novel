@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from ..core.config import settings
 from ..core.security import hash_password
 from ..models import Prompt, SystemConfig, User
+from ..models.key_location import KeyLocation
+from ..models.faction import Faction
+from ..models.novel import NovelBlueprint
 from .base import Base
 from .system_config_defaults import SYSTEM_CONFIG_DEFAULTS
 from .session import AsyncSessionLocal, engine
@@ -113,10 +116,107 @@ async def _ensure_schema_updates() -> None:
     async with engine.begin() as conn:
         def _upgrade(sync_conn):
             inspector = inspect(sync_conn)
+
+            # chapter_outlines.metadata 补列
             columns = {col["name"] for col in inspector.get_columns("chapter_outlines")}
             if "metadata" not in columns:
                 sync_conn.execute(text("ALTER TABLE chapter_outlines ADD COLUMN metadata JSON"))
+
+            # factions.first_appear_chapter 补列（新增字段）
+            if inspector.has_table("factions"):
+                faction_cols = {col["name"] for col in inspector.get_columns("factions")}
+                if "first_appear_chapter" not in faction_cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE factions ADD COLUMN first_appear_chapter INTEGER NULL")
+                    )
+                    logger.info("已为 factions 表补充 first_appear_chapter 列")
+
+            # blueprint_characters.is_protagonist 补列（新增字段）
+            if inspector.has_table("blueprint_characters"):
+                char_cols = {col["name"] for col in inspector.get_columns("blueprint_characters")}
+                if "is_protagonist" not in char_cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE blueprint_characters ADD COLUMN is_protagonist INTEGER DEFAULT 0")
+                    )
+                    logger.info("已为 blueprint_characters 表补充 is_protagonist 列")
+
         await conn.run_sync(_upgrade)
+
+    # 迁移旧 world_setting JSON 数据到新表
+    await _migrate_world_setting_to_tables()
+
+
+async def _migrate_world_setting_to_tables() -> None:
+    """
+    一次性将 novel_blueprints.world_setting 中的 key_locations 和 factions
+    迁移到对应的独立表，按 project_id + name 唯一性检查保证幂等。
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(NovelBlueprint))
+        blueprints = list(result.scalars().all())
+
+        migrated_loc = 0
+        migrated_fac = 0
+
+        for bp in blueprints:
+            ws = bp.world_setting or {}
+            project_id = bp.project_id
+
+            # ── 迁移 key_locations ──
+            raw_locations = ws.get("key_locations", []) or ws.get("locations", [])
+            for item in raw_locations:
+                if not isinstance(item, dict):
+                    continue
+                name = (item.get("name") or "").strip()
+                if not name:
+                    continue
+                try:
+                    existing = await session.execute(
+                        select(KeyLocation).where(
+                            KeyLocation.project_id == project_id,
+                            KeyLocation.name == name,
+                        )
+                    )
+                    if existing.scalar_one_or_none() is None:
+                        session.add(KeyLocation(
+                            project_id=project_id,
+                            name=name,
+                            description=item.get("description") or "",
+                            first_appear_chapter=item.get("first_appear_chapter"),
+                        ))
+                        migrated_loc += 1
+                except Exception as e:
+                    logger.warning(f"[Migration] key_location 迁移失败 ({project_id}/{name}): {e}")
+
+            # ── 迁移 factions ──
+            raw_factions = ws.get("factions", [])
+            for item in raw_factions:
+                if not isinstance(item, dict):
+                    continue
+                name = (item.get("name") or "").strip()
+                if not name:
+                    continue
+                try:
+                    existing = await session.execute(
+                        select(Faction).where(
+                            Faction.project_id == project_id,
+                            Faction.name == name,
+                        )
+                    )
+                    if existing.scalar_one_or_none() is None:
+                        session.add(Faction(
+                            project_id=project_id,
+                            name=name,
+                            description=item.get("description") or "",
+                            first_appear_chapter=item.get("first_appear_chapter"),
+                        ))
+                        migrated_fac += 1
+                except Exception as e:
+                    logger.warning(f"[Migration] faction 迁移失败 ({project_id}/{name}): {e}")
+
+        await session.commit()
+        if migrated_loc or migrated_fac:
+            logger.info(f"[Migration] world_setting 数据迁移完成: +{migrated_loc} 地点, +{migrated_fac} 阵营")
 
 
 async def _ensure_default_prompts(session: AsyncSession) -> None:

@@ -723,6 +723,7 @@ body {
   cursor: pointer;
   transition: all var(--md-duration-short) var(--md-easing-standard);
   user-select: none;
+  white-space: nowrap;
 }
 
 .md-chip-assist {

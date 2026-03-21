@@ -64,6 +64,71 @@ class FactionService:
         await self.db.refresh(faction)
         return faction
 
+    async def upsert_factions(
+        self, project_id: str, factions: List[dict]
+    ) -> List[Faction]:
+        """
+        批量 upsert：按 project_id + name 查重，已存在则更新 first_appear_chapter，
+        不存在则新增。
+        """
+        for item in factions:
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+
+            existing_result = await self.db.execute(
+                select(Faction).where(
+                    Faction.project_id == project_id,
+                    Faction.name == name,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+
+            if existing:
+                new_chapter = item.get("first_appear_chapter")
+                if new_chapter is not None and existing.first_appear_chapter is None:
+                    existing.first_appear_chapter = new_chapter
+                if item.get("description") and not existing.description:
+                    existing.description = item["description"]
+            else:
+                faction = Faction(
+                    project_id=project_id,
+                    name=name,
+                    description=item.get("description") or "",
+                    first_appear_chapter=item.get("first_appear_chapter"),
+                )
+                self.db.add(faction)
+
+        await self.db.commit()
+        return await self.get_factions_by_project(project_id)
+
+    async def replace_all_factions(
+        self, project_id: str, factions: List[dict]
+    ) -> List[Faction]:
+        """
+        全量替换：删除该项目的所有势力，再批量插入。
+        用于前端编辑器提交整体列表的场景。
+        """
+        existing_result = await self.db.execute(
+            select(Faction).where(Faction.project_id == project_id)
+        )
+        for fac in existing_result.scalars().all():
+            await self.db.delete(fac)
+
+        for item in factions:
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+            self.db.add(Faction(
+                project_id=project_id,
+                name=name,
+                description=item.get("description") or "",
+                first_appear_chapter=item.get("first_appear_chapter"),
+            ))
+
+        await self.db.commit()
+        return await self.get_factions_by_project(project_id)
+
     # ===== 势力关系 =====
 
     async def get_faction_relationships(self, project_id: str) -> List[FactionRelationship]:

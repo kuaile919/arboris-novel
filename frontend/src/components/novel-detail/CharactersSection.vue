@@ -30,7 +30,10 @@
             </div>
             <div>
               <h3 class="text-xl font-bold text-slate-900">{{ character.name || '未命名角色' }}</h3>
-              <p v-if="character.identity" class="text-sm text-indigo-500 font-medium">{{ character.identity }}</p>
+              <div class="flex items-center gap-2">
+                <p v-if="character.identity" class="text-sm text-indigo-500 font-medium">{{ character.identity }}</p>
+                <span v-if="character.is_protagonist" class="px-2 py-0.5 text-xs font-semibold text-white bg-purple-600 rounded-full">主角</span>
+              </div>
             </div>
           </div>
           <dl class="space-y-3 text-sm text-slate-600">
@@ -70,6 +73,7 @@ interface CharacterItem {
   goals?: string
   abilities?: string
   relationship_to_protagonist?: string
+  is_protagonist?: boolean
 }
 
 const props = defineProps<{

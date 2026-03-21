@@ -1,7 +1,13 @@
 # AIMETA P=LLM服务_大模型调用封装|R=API调用_流式生成|NR=不含业务逻辑|E=LLMService|X=internal|A=服务类|D=openai,anthropic,httpx|S=net|RD=./README.ai
+import asyncio
 import logging
 import os
+import time
 from typing import Any, Dict, List, Literal, Optional
+
+# 模块级配置缓存，TTL 5分钟，进程重启自动清空
+_config_cache: Dict[str, tuple] = {}
+_CONFIG_TTL = 300
 
 import httpx
 from fastapi import HTTPException, status
@@ -91,18 +97,51 @@ class LLMService:
         user_id: Optional[int] = None,
         timeout: float = 180.0,
         system_prompt: Optional[str] = None,
+        max_retries: int = 3,
     ) -> str:
+        """生成章节摘要，支持重试机制"""
         if not system_prompt:
             prompt_service = PromptService(self.session)
             system_prompt = await prompt_service.get_prompt("extraction")
         if not system_prompt:
             logger.error("未配置名为 'extraction' 的摘要提示词，无法生成章节摘要")
             raise HTTPException(status_code=500, detail="未配置摘要提示词，请联系管理员配置 'extraction' 提示词")
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": chapter_content},
         ]
-        return await self._stream_and_collect(messages, temperature=temperature, user_id=user_id, timeout=timeout)
+
+        # 重试机制
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                return await self._stream_and_collect(
+                    messages,
+                    temperature=temperature,
+                    user_id=user_id,
+                    timeout=timeout
+                )
+            except HTTPException as exc:
+                last_error = exc
+                if exc.status_code == 503 and attempt < max_retries - 1:
+                    # 网络错误，等待后重试
+                    wait_time = 2 ** attempt  # 指数退避：1s, 2s, 4s
+                    logger.warning(
+                        "摘要生成失败，%d秒后重试 (尝试 %d/%d): %s",
+                        wait_time,
+                        attempt + 1,
+                        max_retries,
+                        exc.detail
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise
+
+        # 所有重试都失败
+        if last_error:
+            raise last_error
+        raise HTTPException(status_code=500, detail="摘要生成失败")
 
     async def _stream_and_collect(
         self,
@@ -214,16 +253,13 @@ class LLMService:
 
         if finish_reason == "length" or finish_reason == "max_tokens":
             logger.warning(
-                "LLM response truncated: provider=%s model=%s user_id=%s response_length=%d",
+                "LLM response truncated by token limit: provider=%s model=%s user_id=%s response_length=%d — returning partial content",
                 config.get("provider"),
                 config.get("model"),
                 user_id,
                 len(full_response),
             )
-            raise HTTPException(
-                status_code=500,
-                detail=f"AI 响应因长度限制被截断（已生成 {len(full_response)} 字符），请缩短输入内容或调整模型参数"
-            )
+            # Return partial content rather than raising — callers can use what was generated
 
         if not full_response:
             logger.error(
@@ -412,9 +448,13 @@ class LLMService:
         await self.session.commit()
 
     async def _get_config_value(self, key: str) -> Optional[str]:
+        now = time.monotonic()
+        if key in _config_cache:
+            value, cached_at = _config_cache[key]
+            if now - cached_at < _CONFIG_TTL:
+                return value
+
         record = await self.system_config_repo.get_by_key(key)
-        if record:
-            return record.value
-        # 兼容环境变量，首次迁移时无需立即写入数据库
-        env_key = key.upper().replace(".", "_")
-        return os.getenv(env_key)
+        value = record.value if record else os.getenv(key.upper().replace(".", "_"))
+        _config_cache[key] = (value, now)
+        return value

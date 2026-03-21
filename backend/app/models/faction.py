@@ -55,7 +55,10 @@ class Faction(Base):
     culture: Mapped[Optional[str]] = mapped_column(Text)  # 文化特征
     rules: Mapped[Optional[list]] = mapped_column(JSON)  # 门规/法律
     traditions: Mapped[Optional[list]] = mapped_column(JSON)  # 传统
-    
+
+    # ===== 故事追踪 =====
+    first_appear_chapter: Mapped[Optional[int]] = mapped_column(Integer)
+
     # ===== 元数据 =====
     extra: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

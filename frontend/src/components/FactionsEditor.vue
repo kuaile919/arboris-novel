@@ -9,20 +9,30 @@
       </button>
       <div class="mb-2">
         <label class="block text-sm font-medium text-gray-600 mb-1">阵营名称</label>
-        <input 
-          type="text" 
-          v-model="faction.name" 
+        <input
+          type="text"
+          v-model="faction.name"
           class="w-full p-1 border-b-2 border-gray-300 focus:border-indigo-500 outline-none transition bg-transparent"
           placeholder="例如：幽灵侦探林远"
         />
       </div>
-      <div>
+      <div class="mb-2">
         <label class="block text-sm font-medium text-gray-600 mb-1">描述</label>
-        <textarea 
-          v-model="faction.description" 
+        <textarea
+          v-model="faction.description"
           class="w-full h-20 p-2 mt-1 border border-gray-300 rounded-md focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition text-sm"
           placeholder="关于这个阵营的详细描述..."
         ></textarea>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-600 mb-1">首次出现章节</label>
+        <input
+          type="number"
+          min="1"
+          v-model.number="faction.first_appear_chapter"
+          class="w-28 p-1 border-b-2 border-gray-300 focus:border-indigo-500 outline-none transition bg-transparent text-sm"
+          placeholder="章节号"
+        />
       </div>
     </div>
     <button @click="addFaction" class="w-full mt-4 px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
@@ -32,11 +42,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, defineProps, defineEmits, nextTick } from 'vue';
+import { ref, watch, nextTick } from 'vue';
 
 interface Faction {
   name: string;
   description: string;
+  first_appear_chapter?: number | null;
 }
 
 const props = defineProps({
@@ -61,11 +72,15 @@ watch(() => props.modelValue, (newVal) => {
 
 watch(localFactions, (newVal) => {
   if (syncing) return;
-  emit('update:modelValue', JSON.parse(JSON.stringify(newVal)));
+  const cleaned = JSON.parse(JSON.stringify(newVal)).map((item: any) => ({
+    ...item,
+    first_appear_chapter: (item.first_appear_chapter === '' || item.first_appear_chapter === null || Number.isNaN(item.first_appear_chapter)) ? null : Number(item.first_appear_chapter)
+  }))
+  emit('update:modelValue', cleaned);
 }, { deep: true });
 
 const addFaction = () => {
-  localFactions.value.push({ name: '', description: '' });
+  localFactions.value.push({ name: '', description: '', first_appear_chapter: null });
 };
 
 const removeFaction = (index: number) => {

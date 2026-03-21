@@ -95,3 +95,61 @@ class PromptService:
         async with _LOCK:
             _CACHE.pop(instance.name, None)
         return True
+
+    async def append_to_prompt(self, name: str, content: str, sync_to_file: bool = True) -> bool:
+        """追加内容到指定名称的提示词末尾。
+
+        Args:
+            name: 提示词名称
+            content: 要追加的内容
+            sync_to_file: 是否同步写入到文件系统（默认为 True）
+
+        Returns:
+            bool: 是否追加成功
+        """
+        import os
+        import logging
+        _logger = logging.getLogger(__name__)
+
+        prompt = await self.repo.get_by_name(name)
+        if not prompt:
+            return False
+
+        # 追加内容
+        prompt.content = (prompt.content or "") + "\n" + content
+        await self.session.commit()
+
+        # 更新缓存
+        prompt_read = PromptRead.model_validate(prompt)
+        async with _LOCK:
+            _CACHE[name] = prompt_read
+
+        # 同步写入到文件系统
+        if sync_to_file:
+            try:
+                # 获取 prompts 目录路径
+                # 当前文件: backend/app/services/prompt_service.py
+                # 目标目录: backend/prompts/
+                current_dir = os.path.dirname(os.path.abspath(__file__))  # backend/app/services
+                app_dir = os.path.dirname(current_dir)  # backend/app
+                backend_dir = os.path.dirname(app_dir)  # backend
+                prompts_dir = os.path.join(backend_dir, "prompts")  # backend/prompts
+                file_path = os.path.join(prompts_dir, f"{name}.md")
+
+                _logger.info(f"尝试同步写入文件: {file_path}")
+
+                if os.path.exists(file_path):
+                    with open(file_path, "a", encoding="utf-8") as f:
+                        f.write(content)
+                    _logger.info(f"已同步追加内容到文件: {file_path}")
+                else:
+                    _logger.warning(f"提示词文件不存在，跳过文件同步: {file_path}")
+            except Exception as e:
+                _logger.error(f"同步写入提示词文件失败: {e}")
+
+        return True
+
+    async def get_prompt_id_by_name(self, name: str) -> Optional[int]:
+        """根据名称获取提示词ID。"""
+        prompt = await self.repo.get_by_name(name)
+        return prompt.id if prompt else None

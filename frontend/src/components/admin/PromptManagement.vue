@@ -8,6 +8,9 @@
           <n-button quaternary size="small" @click="fetchPrompts" :loading="loading">
             刷新
           </n-button>
+          <n-button type="info" size="small" @click="syncPrompts" :loading="syncing">
+            同步提示词
+          </n-button>
           <n-button type="primary" size="small" @click="openCreateModal">
             新建 Prompt
           </n-button>
@@ -36,7 +39,7 @@
                   @click="selectPrompt(prompt)"
                 >
                   <div class="prompt-item">
-                    <span class="prompt-name">{{ prompt.title || prompt.name }}</span>
+                    <span class="prompt-name">{{ prompt.name }}</span>
                     <n-tag v-if="prompt.tags?.length" size="tiny" type="info">
                       {{ prompt.tags.length }}
                     </n-tag>
@@ -168,6 +171,7 @@ const loading = ref(false)
 const saving = ref(false)
 const deleting = ref(false)
 const creating = ref(false)
+const syncing = ref(false)
 const error = ref<string | null>(null)
 const editForm = reactive({
   name: '',
@@ -209,6 +213,29 @@ const fetchPrompts = async () => {
     error.value = err instanceof Error ? err.message : '获取提示词列表失败'
   } finally {
     loading.value = false
+  }
+}
+
+const syncPrompts = async () => {
+  syncing.value = true
+  error.value = null
+  try {
+    const result = await AdminAPI.syncPrompts()
+    showAlert({
+      type: 'success',
+      message: result.message || '同步成功'
+    })
+    // 同步完成后刷新列表
+    await fetchPrompts()
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : '同步提示词失败'
+    error.value = errorMsg
+    showAlert({
+      type: 'error',
+      message: errorMsg
+    })
+  } finally {
+    syncing.value = false
   }
 }
 

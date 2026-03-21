@@ -2,7 +2,7 @@
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,11 +12,13 @@ from ...models.novel import Chapter
 from ...schemas.user import UserInDB
 from ...services.constitution_service import ConstitutionService
 from ...services.faction_service import FactionService
+from ...services.key_location_service import KeyLocationService
 from ...services.llm_service import LLMService
 from ...services.memory_layer_service import MemoryLayerService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
 from ...services.writer_persona_service import WriterPersonaService
+from ...services.world_setting_sync_service import WorldSettingSyncService
 from ...models.project_memory import ProjectMemory
 
 router = APIRouter(prefix="/api/projects", tags=["Projects"])
@@ -67,6 +69,29 @@ class FactionPayload(BaseModel):
     rules: Optional[List[str]] = None
     traditions: Optional[List[str]] = None
     extra: Optional[Dict[str, Any]] = None
+    first_appear_chapter: Optional[int] = None
+
+    @field_validator('first_appear_chapter', mode='before')
+    @classmethod
+    def coerce_chapter(cls, v: Any) -> Optional[int]:
+        if v == '' or v is None:
+            return None
+        return v
+
+
+class KeyLocationPayload(BaseModel):
+    id: Optional[int] = None
+    name: str
+    description: Optional[str] = None
+    location_type: Optional[str] = None
+    first_appear_chapter: Optional[int] = None
+
+    @field_validator('first_appear_chapter', mode='before')
+    @classmethod
+    def coerce_chapter(cls, v: Any) -> Optional[int]:
+        if v == '' or v is None:
+            return None
+        return v
 
 
 def _model_to_dict(instance: Any) -> Optional[Dict[str, Any]]:
@@ -256,3 +281,122 @@ async def put_factions(
             saved.append(await faction_service.create_faction(project_id, data))
 
     return {"project_id": project_id, "factions": [_model_to_dict(faction) for faction in saved]}
+
+
+@router.post("/{project_id}/world-setting/sync")
+async def sync_world_setting(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    从章节大纲和摘要中同步关键地点和主要阵营到 world_setting
+
+    Returns:
+        new_locations: 新增的地点列表
+        new_factions: 新增的阵营列表
+        total_locations: 更新后的地点总数
+        total_factions: 更新后的阵营总数
+        added_count: 新增总数
+    """
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    llm_service = LLMService(session)
+    prompt_service = PromptService(session)
+    sync_service = WorldSettingSyncService(session, llm_service, prompt_service)
+
+    result = await sync_service.sync_from_chapters(project_id)
+    return result.to_dict()
+
+
+@router.get("/{project_id}/key-locations")
+async def get_key_locations(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    svc = KeyLocationService(session)
+    locations = await svc.get_locations_by_project(project_id)
+    return {"project_id": project_id, "key_locations": [_model_to_dict(loc) for loc in locations]}
+
+
+@router.put("/{project_id}/key-locations")
+async def put_key_locations(
+    project_id: str,
+    payload: List[KeyLocationPayload] = Body(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    svc = KeyLocationService(session)
+    saved = []
+    for item in payload:
+        data = item.model_dump(exclude_unset=True)
+        loc_id = data.pop("id", None)
+        if loc_id:
+            existing = await svc.get_location(loc_id)
+            if not existing or existing.project_id != project_id:
+                continue
+            loc = await svc.update_location(loc_id, data)
+            if loc:
+                saved.append(loc)
+        else:
+            saved.append(await svc.create_location(project_id, data))
+
+    return {"project_id": project_id, "key_locations": [_model_to_dict(loc) for loc in saved]}
+
+
+@router.delete("/{project_id}/key-locations/{location_id}")
+async def delete_key_location(
+    project_id: str,
+    location_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    svc = KeyLocationService(session)
+    existing = await svc.get_location(location_id)
+    if not existing or existing.project_id != project_id:
+        raise HTTPException(status_code=404, detail="地点不存在")
+    await svc.delete_location(location_id)
+    return {"success": True}
+
+
+@router.put("/{project_id}/key-locations/replace-all")
+async def replace_all_key_locations(
+    project_id: str,
+    payload: List[KeyLocationPayload] = Body(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    svc = KeyLocationService(session)
+    items = [p.model_dump(exclude_unset=True) for p in payload]
+    locations = await svc.replace_all(project_id, items)
+    return {"project_id": project_id, "key_locations": [_model_to_dict(loc) for loc in locations]}
+
+
+@router.put("/{project_id}/factions/replace-all")
+async def replace_all_factions(
+    project_id: str,
+    payload: List[FactionPayload] = Body(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    faction_service = FactionService(session, PromptService(session))
+    items = [p.model_dump(exclude_unset=True) for p in payload]
+    factions = await faction_service.replace_all_factions(project_id, items)
+    return {"project_id": project_id, "factions": [_model_to_dict(f) for f in factions]}

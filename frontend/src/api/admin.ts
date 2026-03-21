@@ -240,6 +240,19 @@ export class AdminAPI {
     })
   }
 
+  static syncPrompts(): Promise<{
+    status: string
+    message: string
+    synced: number
+    created: number
+    updated: number
+    errors?: string[]
+  }> {
+    return this.request('/prompts/sync', {
+      method: 'POST'
+    })
+  }
+
   // Update logs
   static listUpdateLogs(): Promise<UpdateLog[]> {
     return this.request('/update-logs')

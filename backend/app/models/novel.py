@@ -113,6 +113,7 @@ class BlueprintCharacter(Base):
     goals: Mapped[Optional[str]] = mapped_column(Text)
     abilities: Mapped[Optional[str]] = mapped_column(Text)
     relationship_to_protagonist: Mapped[Optional[str]] = mapped_column(Text)
+    is_protagonist: Mapped[bool] = mapped_column(Integer, default=0)
     extra: Mapped[Optional[dict]] = mapped_column(JSON)
     position: Mapped[int] = mapped_column(Integer, default=0)
 

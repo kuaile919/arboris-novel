@@ -99,29 +99,20 @@
 
 ## 输入格式
 
-```json
-{
-  "original_content": "需要优化的章节内容",
-  "character_dna": {
-    "name": "角色名",
-    "childhood_trauma": "童年创伤",
-    "core_fear": "核心恐惧",
-    "inner_desire": "内心渴望",
-    "thinking_pattern": "思维模式"
-  },
-  "scene_context": "场景背景说明"
-}
-```
+你将收到一个 JSON 对象，包含：
+- original_content: 需要优化的章节内容
+- additional_notes: 用户的额外优化指令
+- length_constraint: 字数限制要求
+- character_dna: 角色DNA档案（如果有）
 
 ## 输出格式
 
-```json
+**重要**：直接输出 JSON 对象，不要使用 markdown 代码块包裹。
+
 {
   "optimized_content": "优化后的完整章节内容",
-  "optimization_notes": "优化说明，列出主要改动点",
-  "psychology_highlights": "心理描写亮点说明"
+  "optimization_notes": "优化说明，列出主要改动点"
 }
-```
 
 ## 注意事项
 

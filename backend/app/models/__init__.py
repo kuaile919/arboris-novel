@@ -42,6 +42,10 @@ from .memory_layer import (
     StoryTimeTracker,
 )
 
+# 新增：势力和关键地点模型
+from .faction import Faction, FactionRelationship, FactionMember, FactionRelationshipHistory
+from .key_location import KeyLocation
+
 # 新增：伏笔模型
 from .foreshadowing import (
     Foreshadowing,
@@ -50,6 +54,7 @@ from .foreshadowing import (
     ForeshadowingStatusHistory,
     ForeshadowingAnalysis,
 )
+from .chapter_optimization_task import ChapterOptimizationTask
 
 __all__ = [
     # 基础模型
@@ -91,4 +96,11 @@ __all__ = [
     "ForeshadowingReminder",
     "ForeshadowingStatusHistory",
     "ForeshadowingAnalysis",
+    "ChapterOptimizationTask",
+    # 势力和关键地点
+    "Faction",
+    "FactionRelationship",
+    "FactionMember",
+    "FactionRelationshipHistory",
+    "KeyLocation",
 ]

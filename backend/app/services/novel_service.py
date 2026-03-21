@@ -93,6 +93,8 @@ from ..models import (
     NovelConversation,
     NovelProject,
 )
+from ..models.key_location import KeyLocation
+from ..models.faction import Faction
 from ..repositories.novel_repository import NovelRepository
 from ..schemas.admin import AdminNovelSummary
 from ..schemas.novel import (
@@ -149,7 +151,7 @@ class NovelService:
         section: NovelSectionType,
     ) -> NovelSectionResponse:
         project = await self.ensure_project_owner(project_id, user_id)
-        return self._build_section_response(project, section)
+        return await self._build_section_response(project, section)
 
     async def get_chapter_schema(
         self,
@@ -274,6 +276,7 @@ class NovelService:
                     goals=data.get("goals"),
                     abilities=data.get("abilities"),
                     relationship_to_protagonist=data.get("relationship_to_protagonist"),
+                    is_protagonist=bool(data.get("is_protagonist", False)),
                     extra={k: v for k, v in data.items() if k not in {
                         "name",
                         "identity",
@@ -281,6 +284,7 @@ class NovelService:
                         "goals",
                         "abilities",
                         "relationship_to_protagonist",
+                        "is_protagonist",
                     }},
                     position=index,
                 )
@@ -338,6 +342,7 @@ class NovelService:
                         goals=data.get("goals"),
                         abilities=data.get("abilities"),
                         relationship_to_protagonist=data.get("relationship_to_protagonist"),
+                        is_protagonist=bool(data.get("is_protagonist", False)),
                         extra={k: v for k, v in data.items() if k not in {
                             "name",
                             "identity",
@@ -345,6 +350,7 @@ class NovelService:
                             "goals",
                             "abilities",
                             "relationship_to_protagonist",
+                            "is_protagonist",
                         }},
                         position=index,
                     )
@@ -544,7 +550,15 @@ class NovelService:
                 data = {}
 
             # 将 description 和 first_appear_chapter 等非标准字段存入 extra
-            standard_fields = {"name", "identity", "personality", "goals", "abilities", "relationship_to_protagonist"}
+            standard_fields = {
+                "name",
+                "identity",
+                "personality",
+                "goals",
+                "abilities",
+                "relationship_to_protagonist",
+                "is_protagonist",
+            }
             extra = {k: v for k, v in data.items() if k not in standard_fields}
 
             self.session.add(
@@ -556,6 +570,7 @@ class NovelService:
                     goals=data.get("goals"),
                     abilities=data.get("abilities"),
                     relationship_to_protagonist=data.get("relationship_to_protagonist"),
+                    is_protagonist=bool(data.get("is_protagonist", False)),
                     extra=extra if extra else None,
                     position=index,
                 )
@@ -627,7 +642,7 @@ class NovelService:
         project = await self.repo.get_by_id(project_id)
         if not project:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
-        return self._build_section_response(project, section)
+        return await self._build_section_response(project, section)
 
     async def get_chapter_schema_for_admin(
         self,
@@ -698,6 +713,7 @@ class NovelService:
                         "goals": character.goals,
                         "abilities": character.abilities,
                         "relationship_to_protagonist": character.relationship_to_protagonist,
+                        "is_protagonist": bool(character.is_protagonist),
                         **(character.extra or {}),
                     }
                     for character in sorted(project.characters, key=lambda c: c.position)
@@ -734,7 +750,7 @@ class NovelService:
             chapter_outline=[],
         )
 
-    def _build_section_response(
+    async def _build_section_response(
         self,
         project: NovelProject,
         section: NovelSectionType,
@@ -755,8 +771,40 @@ class NovelService:
                 "updated_at": project.updated_at.isoformat() if project.updated_at else None,
             }
         elif section == NovelSectionType.WORLD_SETTING:
+            _loc_result = await self.session.execute(
+                select(KeyLocation)
+                .where(KeyLocation.project_id == project.id)
+                .order_by(KeyLocation.first_appear_chapter.asc().nullslast(), KeyLocation.id.asc())
+            )
+            _fac_result = await self.session.execute(
+                select(Faction).where(Faction.project_id == project.id)
+            )
+            _ws = blueprint.world_setting if isinstance(blueprint.world_setting, dict) else {}
             data = {
-                "world_setting": blueprint.world_setting or {},
+                "world_setting": {
+                    k: v for k, v in _ws.items()
+                    if k not in ("key_locations", "factions", "locations", "location")
+                },
+                "key_locations": [
+                    {
+                        "id": loc.id,
+                        "name": loc.name,
+                        "description": loc.description or "",
+                        "location_type": loc.location_type,
+                        "first_appear_chapter": loc.first_appear_chapter,
+                    }
+                    for loc in _loc_result.scalars().all()
+                ],
+                "factions": [
+                    {
+                        "id": fac.id,
+                        "name": fac.name,
+                        "description": fac.description or "",
+                        "faction_type": fac.faction_type,
+                        "first_appear_chapter": fac.first_appear_chapter,
+                    }
+                    for fac in _fac_result.scalars().all()
+                ],
             }
         elif section == NovelSectionType.CHARACTERS:
             data = {

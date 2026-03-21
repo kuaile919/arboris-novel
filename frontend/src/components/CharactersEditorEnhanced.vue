@@ -34,6 +34,13 @@
           <label class="block text-sm font-medium text-gray-600 mb-1">与主角关系</label>
           <input type="text" v-model="character.relationship_to_protagonist" class="w-full p-1 border-b-2 border-gray-300 focus:border-indigo-500 outline-none transition bg-transparent" />
         </div>
+        <div class="flex items-center">
+          <label class="inline-flex items-center cursor-pointer">
+            <input type="checkbox" v-model="character.is_protagonist" class="sr-only peer" />
+            <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+            <span class="ml-3 text-sm font-medium text-gray-700">主角</span>
+          </label>
+        </div>
       </div>
 
       <!-- DNA档案展开按钮 -->
@@ -238,6 +245,7 @@ interface Character {
   goals: string;
   abilities: string;
   relationship_to_protagonist: string;
+  is_protagonist: boolean;
   extra?: {
     dna_profile?: DNAProfile;
     [key: string]: any;
@@ -315,13 +323,14 @@ watch(localCharacters, (newVal) => {
 }, { deep: true });
 
 const addCharacter = () => {
-  localCharacters.value.push({ 
-    name: '', 
-    identity: '', 
-    personality: '', 
-    goals: '', 
-    abilities: '', 
+  localCharacters.value.push({
+    name: '',
+    identity: '',
+    personality: '',
+    goals: '',
+    abilities: '',
     relationship_to_protagonist: '',
+    is_protagonist: false,
     extra: {
       dna_profile: initDNAProfile()
     }
