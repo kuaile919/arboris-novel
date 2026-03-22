@@ -221,19 +221,13 @@ const syncPrompts = async () => {
   error.value = null
   try {
     const result = await AdminAPI.syncPrompts()
-    showAlert({
-      type: 'success',
-      message: result.message || '同步成功'
-    })
+    showAlert(result.message || '同步成功', 'success')
     // 同步完成后刷新列表
     await fetchPrompts()
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : '同步提示词失败'
     error.value = errorMsg
-    showAlert({
-      type: 'error',
-      message: errorMsg
-    })
+    showAlert(errorMsg, 'error')
   } finally {
     syncing.value = false
   }

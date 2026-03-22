@@ -55,6 +55,7 @@ from .foreshadowing import (
     ForeshadowingAnalysis,
 )
 from .chapter_optimization_task import ChapterOptimizationTask
+from .reference_document import ReferenceDocument
 
 __all__ = [
     # 基础模型
@@ -103,4 +104,5 @@ __all__ = [
     "FactionMember",
     "FactionRelationshipHistory",
     "KeyLocation",
+    "ReferenceDocument",
 ]

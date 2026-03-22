@@ -38,6 +38,10 @@ const request = async (url: string, options: RequestInit = {}) => {
     throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
   }
 
+  if (response.status === 204) {
+    return undefined
+  }
+
   return response.json()
 }
 
@@ -72,6 +76,7 @@ export interface Blueprint {
   characters?: Character[]
   relationships?: any[]
   chapter_outline?: ChapterOutline[]
+  total_chapters?: number
 }
 
 export interface Character {
@@ -181,6 +186,25 @@ export interface SyncWorldSettingResult {
   total_locations: number
   total_factions: number
   added_count: number
+}
+
+export interface ReferenceDocumentItem {
+  id: number
+  project_id: string
+  filename: string
+  title: string
+  file_type: string
+  file_size: number
+  char_count: number
+  chunk_count: number
+  status: string
+  error_message?: string | null
+  created_at: string
+}
+
+export interface ReferenceUploadResponse {
+  document: ReferenceDocumentItem
+  message: string
 }
 
 // 内容型Section（对应后端NovelSectionType枚举）
@@ -430,6 +454,30 @@ export class NovelAPI {
         chapter_number: chapterNumber,
         content: content
       })
+    })
+  }
+
+  static async listReferenceDocuments(projectId: string): Promise<ReferenceDocumentItem[]> {
+    return request(`${API_BASE_URL}/api/references/projects/${projectId}/documents`, {
+      method: 'GET'
+    })
+  }
+
+  static async uploadReferenceDocument(
+    projectId: string,
+    file: File
+  ): Promise<ReferenceUploadResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request(`${API_BASE_URL}/api/references/projects/${projectId}/documents/upload`, {
+      method: 'POST',
+      body: formData
+    })
+  }
+
+  static async deleteReferenceDocument(projectId: string, documentId: number): Promise<void> {
+    await request(`${API_BASE_URL}/api/references/projects/${projectId}/documents/${documentId}`, {
+      method: 'DELETE'
     })
   }
 }

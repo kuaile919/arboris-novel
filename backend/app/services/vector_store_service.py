@@ -404,6 +404,31 @@ class VectorStoreService:
         except Exception as exc:  # pragma: no cover - 删除失败时记录日志
             logger.error("删除章节向量失败: project=%s chapters=%s error=%s", project_id, chapter_numbers, exc)
 
+    async def delete_reference_document_chunks(self, *, project_id: str, document_id: int) -> None:
+        """删除指定参考文档对应的向量分块。"""
+        if not self._client:
+            return
+        await self.ensure_schema()
+        try:
+            await self._client.execute(  # type: ignore[union-attr]
+                """
+                DELETE FROM rag_chunks
+                WHERE project_id = :project_id
+                  AND id LIKE :prefix
+                """,
+                {
+                    "project_id": project_id,
+                    "prefix": f"ref:{project_id}:{document_id}:%",
+                },
+            )
+        except Exception as exc:  # pragma: no cover - 删除失败时记录日志
+            logger.error(
+                "删除参考文档向量失败: project=%s document_id=%s error=%s",
+                project_id,
+                document_id,
+                exc,
+            )
+
     @staticmethod
     def _to_f32_blob(embedding: Sequence[float]) -> bytes:
         """将向量浮点列表编码为 libsql 可识别的 float32 二进制。"""

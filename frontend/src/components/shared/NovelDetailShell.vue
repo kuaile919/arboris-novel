@@ -251,12 +251,14 @@ import ChapterOutlineSection from '@/components/novel-detail/ChapterOutlineSecti
 import ChaptersSection from '@/components/novel-detail/ChaptersSection.vue'
 import EmotionCurveSection from '@/components/novel-detail/EmotionCurveSection.vue'
 import ForeshadowingSection from '@/components/novel-detail/ForeshadowingSection.vue'
+import ReferenceLibrarySection from '@/components/novel-detail/ReferenceLibrarySection.vue'
 
 interface Props {
   isAdmin?: boolean
 }
 
-type SectionKey = AllSectionType
+type ExtraSectionType = 'reference_library'
+type SectionKey = AllSectionType | ExtraSectionType
 
 const props = withDefaults(defineProps<Props>(), {
   isAdmin: false
@@ -276,6 +278,9 @@ const sections: Array<{ key: SectionKey; label: string; description: string }> =
   { key: 'relationships', label: '人物关系', description: '角色之间的联系' },
   { key: 'chapter_outline', label: '章节大纲', description: props.isAdmin ? '故事章节规划' : '故事结构规划' },
   { key: 'chapters', label: '章节内容', description: props.isAdmin ? '生成章节与正文' : '生成状态与摘要' },
+  ...(!props.isAdmin
+    ? [{ key: 'reference_library' as const, label: '参考资料库', description: '上传原著做RAG参考' }]
+    : []),
   { key: 'emotion_curve', label: '情感曲线', description: '追踪章节情感变化' },
   { key: 'foreshadowing', label: '伏笔管理', description: '故事线索与回收' }
 ]
@@ -287,6 +292,7 @@ const sectionComponents: Record<SectionKey, any> = {
   relationships: RelationshipsSection,
   chapter_outline: ChapterOutlineSection,
   chapters: ChaptersSection,
+  reference_library: ReferenceLibrarySection,
   emotion_curve: EmotionCurveSection,
   foreshadowing: ForeshadowingSection
 }
@@ -325,6 +331,11 @@ const getSectionIcon = (key: SectionKey) => {
       h('path', { d: 'M4 19.5A2.5 2.5 0 016.5 17H20' }),
       h('path', { d: 'M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z' })
     ]),
+    reference_library: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 }, [
+      h('path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }),
+      h('polyline', { points: '7 10 12 15 17 10' }),
+      h('line', { x1: 12, y1: 15, x2: 12, y2: 3 })
+    ]),
     emotion_curve: () => h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2 }, [
       h('path', { d: 'M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z' })
     ]),
@@ -343,6 +354,7 @@ const sectionLoading = reactive<Record<SectionKey, boolean>>({
   relationships: false,
   chapter_outline: false,
   chapters: false,
+  reference_library: false,
   emotion_curve: false,
   foreshadowing: false
 })
@@ -353,6 +365,7 @@ const sectionError = reactive<Record<SectionKey, string | null>>({
   relationships: null,
   chapter_outline: null,
   chapters: null,
+  reference_library: null,
   emotion_curve: null,
   foreshadowing: null
 })
@@ -420,7 +433,7 @@ const loadSection = async (section: SectionKey, force = false) => {
   if (!projectId) return
   
   // 分析型Section使用独立的API，不需要在这里加载
-  const analysisSections: SectionKey[] = ['emotion_curve', 'foreshadowing']
+  const analysisSections: SectionKey[] = ['emotion_curve', 'foreshadowing', 'reference_library']
   if (analysisSections.includes(section)) {
     return
   }
@@ -502,6 +515,8 @@ const componentProps = computed(() => {
       return { outline: data?.chapter_outline || [], editable }
     case 'chapters':
       return { chapters: data?.chapters || [], isAdmin: props.isAdmin }
+    case 'reference_library':
+      return { projectId: route.params.id as string }
     default:
       return {}
   }

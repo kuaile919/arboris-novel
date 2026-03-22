@@ -285,12 +285,12 @@ class LLMService:
         return full_response
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
-        logger.info("[ _resolve_llm_config called, user_id=%s", user_id)
+        logger.debug("[llm-config] resolve called, user_id=%s", user_id)
 
         # 检查用户是否有自定义配置
         if user_id:
             config = await self.llm_repo.get_by_user(user_id)
-            logger.info("[ 用户自定义配置: %s", config)
+            logger.debug("[llm-config] user custom config exists=%s", bool(config))
             if config and config.llm_provider_api_key:
                 return {
                     "api_key": config.llm_provider_api_key,
@@ -305,7 +305,7 @@ class LLMService:
 
         # 根据 LLM 提供方获取配置
         provider = await self._get_config_value("llm_provider") or settings.llm_provider
-        logger.info("[ provider from config: %s", provider)
+        logger.debug("[llm-config] provider from config=%s", provider)
 
         if provider == "anthropic":
             # 智谱 BigModel (Zhipu) 配置
@@ -313,7 +313,7 @@ class LLMService:
             db_zhipu_base_url = await self._get_config_value("zhipu_base_url")
             db_zhipu_model = await self._get_config_value("zhipu_model_name")
 
-            logger.info("[ DB zhipu config: api_key=%s, base_url=%s, model=%s",
+            logger.debug("[llm-config] DB zhipu config: api_key=%s, base_url=%s, model=%s",
                 db_zhipu_api_key[:20] + "..." if db_zhipu_api_key else None,
                 db_zhipu_base_url, db_zhipu_model)
 
@@ -321,7 +321,7 @@ class LLMService:
             base_url = db_zhipu_base_url or settings.zhipu_base_url
             model = db_zhipu_model or settings.zhipu_model_name
 
-            logger.info("[ Final zhipu config: api_key=%s, base_url=%s, model=%s",
+            logger.debug("[llm-config] final zhipu config: api_key=%s, base_url=%s, model=%s",
                 api_key[:20] + "..." if api_key else None, base_url, model)
         else:
             api_key = await self._get_config_value("openai_api_key") or settings.openai_api_key
@@ -362,6 +362,12 @@ class LLMService:
                 await self._get_config_value("ollama.embedding_base_url")
                 or await self._get_config_value("embedding.base_url")
             )
+            logger.info(
+                "[embedding] provider=ollama model=%s base_url=%s user_id=%s",
+                target_model,
+                base_url,
+                user_id,
+            )
             client = OllamaAsyncClient(host=base_url)
             try:
                 response = await client.embeddings(model=target_model, prompt=text)
@@ -385,9 +391,19 @@ class LLMService:
             if not isinstance(embedding, list):
                 embedding = list(embedding)
         else:
-            config = await self._resolve_llm_config(user_id)
-            api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
-            base_url = await self._get_config_value("embedding.base_url") or config.get("base_url")
+            embedding_api_key = await self._get_config_value("embedding.api_key")
+            embedding_base_url = await self._get_config_value("embedding.base_url")
+            config: Dict[str, Optional[str]] = {}
+            if not embedding_api_key:
+                config = await self._resolve_llm_config(user_id)
+            api_key = embedding_api_key or config.get("api_key")
+            base_url = embedding_base_url or config.get("base_url")
+            logger.info(
+                "[embedding] provider=openai-compatible model=%s base_url=%s user_id=%s",
+                target_model,
+                base_url,
+                user_id,
+            )
             client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             try:
                 response = await client.embeddings.create(
