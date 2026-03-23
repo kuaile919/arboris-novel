@@ -774,7 +774,11 @@ class NovelService:
             _loc_result = await self.session.execute(
                 select(KeyLocation)
                 .where(KeyLocation.project_id == project.id)
-                .order_by(KeyLocation.first_appear_chapter.asc().nullslast(), KeyLocation.id.asc())
+                .order_by(
+                    KeyLocation.first_appear_chapter.is_(None),
+                    KeyLocation.first_appear_chapter.asc(),
+                    KeyLocation.id.asc(),
+                )
             )
             _fac_result = await self.session.execute(
                 select(Faction).where(Faction.project_id == project.id)

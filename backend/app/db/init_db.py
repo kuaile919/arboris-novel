@@ -1,5 +1,6 @@
 # AIMETA P=数据库初始化_创建表和默认数据|R=创建表_初始化管理员|NR=不含业务逻辑|E=init_db|X=internal|A=初始化函数|D=sqlalchemy|S=db|RD=./README.ai
 import logging
+import os
 
 from pathlib import Path
 
@@ -77,6 +78,9 @@ async def init_db() -> None:
 
 async def _ensure_database_exists() -> None:
     """在首次连接前确认数据库存在，针对不同驱动做最小化准备工作。"""
+    if os.getenv("ARBORIS_SKIP_DATABASE_CREATE", "").strip().lower() in {"1", "true", "yes"}:
+        return
+
     url = make_url(settings.sqlalchemy_database_uri)
 
     if url.get_backend_name() == "sqlite":

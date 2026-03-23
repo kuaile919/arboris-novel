@@ -1,4 +1,6 @@
 # AIMETA P=应用配置_环境变量加载和设置类|R=配置加载_环境变量|NR=不含业务逻辑|E=settings|X=internal|A=Settings类|D=pydantic|S=fs|RD=./README.ai
+import importlib.util
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
@@ -56,6 +58,11 @@ class Settings(BaseSettings):
     mysql_user: str = Field(default="root", env="MYSQL_USER", description="MySQL 用户名")
     mysql_password: str = Field(default="", env="MYSQL_PASSWORD", description="MySQL 密码")
     mysql_database: str = Field(default="arboris", env="MYSQL_DATABASE", description="MySQL 数据库名称")
+    mysql_driver: str = Field(
+        default="auto",
+        env="MYSQL_DRIVER",
+        description="MySQL 异步驱动，可选 auto / asyncmy / aiomysql",
+    )
     sqlite_db_path: Optional[str] = Field(
         default=None,
         env="SQLITE_DB_PATH",
@@ -228,6 +235,29 @@ class Settings(BaseSettings):
             raise ValueError("DB_PROVIDER 仅支持 mysql 或 sqlite")
         return candidate
 
+    @validator("mysql_driver", pre=True)
+    def _normalize_mysql_driver(cls, value: Optional[str]) -> str:
+        """统一 MySQL 驱动配置，并限制为受支持的异步驱动。"""
+        candidate = (value or "auto").strip().lower()
+        if candidate not in {"auto", "asyncmy", "aiomysql"}:
+            raise ValueError("MYSQL_DRIVER 仅支持 auto、asyncmy 或 aiomysql")
+        return candidate
+
+    @validator("debug", pre=True)
+    def _normalize_debug(cls, value: object) -> bool:
+        """兼容 IDE 或 shell 中的非标准布尔值，例如 DEBUG=release。"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            candidate = value.strip().lower()
+            if candidate in {"1", "true", "yes", "on", "debug", "development"}:
+                return True
+            if candidate in {"0", "false", "no", "off", "release", "production"}:
+                return False
+        return bool(value) if value is not None else True
+
     @validator("llm_provider", pre=True)
     def _normalize_llm_provider(cls, value: Optional[str]) -> str:
         """限制 LLM 提供方的取值范围。"""
@@ -298,12 +328,27 @@ class Settings(BaseSettings):
         # MySQL 分支：统一对密码进行 URL 编码，避免特殊字符破坏连接串
         from urllib.parse import quote_plus
 
+        driver = self._resolved_mysql_driver
         encoded_password = quote_plus(self.mysql_password)
         database = (self.mysql_database or "").strip("/")
         return (
-            f"mysql+asyncmy://{self.mysql_user}:{encoded_password}"
+            f"mysql+{driver}://{self.mysql_user}:{encoded_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{database}"
         )
+
+    @property
+    def _resolved_mysql_driver(self) -> str:
+        """优先使用已安装的异步驱动，避免本地环境缺少 asyncmy 时无法启动。"""
+        if self.mysql_driver != "auto":
+            if importlib.util.find_spec(self.mysql_driver) is None:
+                raise ValueError(f"未安装 MySQL 驱动: {self.mysql_driver}")
+            return self.mysql_driver
+
+        for driver in ("asyncmy", "aiomysql"):
+            if importlib.util.find_spec(driver):
+                return driver
+
+        raise ValueError("未检测到可用的 MySQL 异步驱动，请安装 asyncmy 或 aiomysql")
 
     @property
     def is_sqlite_backend(self) -> bool:

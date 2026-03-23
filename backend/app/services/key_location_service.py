@@ -21,7 +21,11 @@ class KeyLocationService:
         result = await self.db.execute(
             select(KeyLocation)
             .where(KeyLocation.project_id == project_id)
-            .order_by(KeyLocation.first_appear_chapter.asc().nullslast(), KeyLocation.id.asc())
+            .order_by(
+                KeyLocation.first_appear_chapter.is_(None),
+                KeyLocation.first_appear_chapter.asc(),
+                KeyLocation.id.asc(),
+            )
         )
         return list(result.scalars().all())
 
