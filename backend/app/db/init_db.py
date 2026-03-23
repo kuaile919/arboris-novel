@@ -121,6 +121,17 @@ async def _ensure_schema_updates() -> None:
         def _upgrade(sync_conn):
             inspector = inspect(sync_conn)
 
+            def _ensure_index(table_name: str, index_name: str, columns_sql: str) -> None:
+                if not inspector.has_table(table_name):
+                    return
+                existing_indexes = {idx["name"] for idx in inspector.get_indexes(table_name)}
+                if index_name in existing_indexes:
+                    return
+                sync_conn.execute(
+                    text(f"CREATE INDEX {index_name} ON {table_name} ({columns_sql})")
+                )
+                logger.info("已为 %s 表补充索引 %s", table_name, index_name)
+
             # chapter_outlines.metadata 补列
             columns = {col["name"] for col in inspector.get_columns("chapter_outlines")}
             if "metadata" not in columns:
@@ -143,6 +154,37 @@ async def _ensure_schema_updates() -> None:
                         text("ALTER TABLE blueprint_characters ADD COLUMN is_protagonist INTEGER DEFAULT 0")
                     )
                     logger.info("已为 blueprint_characters 表补充 is_protagonist 列")
+
+            _ensure_index(
+                "novel_conversations",
+                "ix_novel_conversations_project_id_seq",
+                "project_id, seq",
+            )
+            _ensure_index(
+                "chapter_outlines",
+                "ix_chapter_outlines_project_id_chapter_number",
+                "project_id, chapter_number",
+            )
+            _ensure_index(
+                "chapters",
+                "ix_chapters_project_id_chapter_number",
+                "project_id, chapter_number",
+            )
+            _ensure_index(
+                "chapter_versions",
+                "ix_chapter_versions_chapter_id_created_at",
+                "chapter_id, created_at",
+            )
+            _ensure_index(
+                "chapter_evaluations",
+                "ix_chapter_evaluations_chapter_id_created_at",
+                "chapter_id, created_at",
+            )
+            _ensure_index(
+                "key_locations",
+                "ix_key_locations_project_id_first_appear_chapter_id",
+                "project_id, first_appear_chapter, id",
+            )
 
         await conn.run_sync(_upgrade)
 

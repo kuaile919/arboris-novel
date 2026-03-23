@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -65,6 +65,9 @@ class NovelConversation(Base):
     """对话记录表，存储概念阶段的连续对话。"""
 
     __tablename__ = "novel_conversations"
+    __table_args__ = (
+        Index("ix_novel_conversations_project_id_seq", "project_id", "seq"),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)
@@ -139,6 +142,9 @@ class ChapterOutline(Base):
     """章节纲要，支持 metadata 存储导演脚本/节拍状态等信息。"""
 
     __tablename__ = "chapter_outlines"
+    __table_args__ = (
+        Index("ix_chapter_outlines_project_id_chapter_number", "project_id", "chapter_number"),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)
@@ -155,6 +161,9 @@ class Chapter(Base):
     """章节正文状态，指向选中的版本。"""
 
     __tablename__ = "chapters"
+    __table_args__ = (
+        Index("ix_chapters_project_id_chapter_number", "project_id", "chapter_number"),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)
@@ -192,6 +201,9 @@ class ChapterVersion(Base):
     """章节生成的不同版本文本。"""
 
     __tablename__ = "chapter_versions"
+    __table_args__ = (
+        Index("ix_chapter_versions_chapter_id_created_at", "chapter_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
@@ -216,6 +228,9 @@ class ChapterEvaluation(Base):
     """章节评估记录。"""
 
     __tablename__ = "chapter_evaluations"
+    __table_args__ = (
+        Index("ix_chapter_evaluations_chapter_id_created_at", "chapter_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)

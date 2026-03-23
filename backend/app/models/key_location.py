@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +24,14 @@ class KeyLocation(Base):
     """关键地点实体"""
 
     __tablename__ = "key_locations"
+    __table_args__ = (
+        Index(
+            "ix_key_locations_project_id_first_appear_chapter_id",
+            "project_id",
+            "first_appear_chapter",
+            "id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(
