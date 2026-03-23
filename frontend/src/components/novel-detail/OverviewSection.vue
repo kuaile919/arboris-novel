@@ -62,7 +62,6 @@
 </template>
 
 <script setup lang="ts">
-import { defineEmits, defineProps } from 'vue'
 
 interface OverviewData {
   one_sentence_summary?: string | null

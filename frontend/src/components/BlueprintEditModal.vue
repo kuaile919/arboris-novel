@@ -70,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, defineProps, defineEmits } from 'vue';
+import { ref, watch } from 'vue';
 import ChapterOutlineEditor from './ChapterOutlineEditor.vue';
 import KeyLocationsEditor from './KeyLocationsEditor.vue';
 import CharactersEditor from './CharactersEditorEnhanced.vue';

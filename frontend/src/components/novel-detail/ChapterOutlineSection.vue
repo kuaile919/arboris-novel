@@ -54,7 +54,6 @@
 </template>
 
 <script setup lang="ts">
-import { defineEmits, defineProps } from 'vue'
 
 interface OutlineItem {
   chapter_number: number

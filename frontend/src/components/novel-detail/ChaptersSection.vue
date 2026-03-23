@@ -403,7 +403,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineProps, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { NovelAPI } from '@/api/novel'
 import { AdminAPI } from '@/api/admin'
 import { useRoute } from 'vue-router'
