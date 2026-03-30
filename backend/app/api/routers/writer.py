@@ -1140,17 +1140,8 @@ AI建议内容：
             )
 
             if extracted_rule and extracted_rule.strip():
-                # 格式化为规则块
-                rule_content = f"""
-
----
-
-## 用户反馈规则（自动添加）
-
-{extracted_rule.strip()}
-"""
-                # 追加到 outline_generation 提示词
-                success = await prompt_service.append_to_prompt("outline_generation", rule_content)
+                # 追加到 outline_generation 提示词（合并到已有用户反馈区块）
+                success = await prompt_service.append_user_feedback_rule("outline_generation", extracted_rule.strip())
                 if success:
                     logger.info(f"已将 AI 建议提炼为规则并追加到 outline_generation 提示词")
                 else:

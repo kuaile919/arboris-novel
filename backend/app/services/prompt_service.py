@@ -124,30 +124,92 @@ class PromptService:
         async with _LOCK:
             _CACHE[name] = prompt_read
 
-        # 同步写入到文件系统
+        # 同步写入到文件系统（全量覆写，与 DB 保持一致）
         if sync_to_file:
-            try:
-                # 获取 prompts 目录路径
-                # 当前文件: backend/app/services/prompt_service.py
-                # 目标目录: backend/prompts/
-                current_dir = os.path.dirname(os.path.abspath(__file__))  # backend/app/services
-                app_dir = os.path.dirname(current_dir)  # backend/app
-                backend_dir = os.path.dirname(app_dir)  # backend
-                prompts_dir = os.path.join(backend_dir, "prompts")  # backend/prompts
-                file_path = os.path.join(prompts_dir, f"{name}.md")
-
-                _logger.info(f"尝试同步写入文件: {file_path}")
-
-                if os.path.exists(file_path):
-                    with open(file_path, "a", encoding="utf-8") as f:
-                        f.write(content)
-                    _logger.info(f"已同步追加内容到文件: {file_path}")
-                else:
-                    _logger.warning(f"提示词文件不存在，跳过文件同步: {file_path}")
-            except Exception as e:
-                _logger.error(f"同步写入提示词文件失败: {e}")
+            self._sync_prompt_to_file(name, prompt.content, _logger)
 
         return True
+
+    async def append_user_feedback_rule(self, name: str, rule: str) -> bool:
+        """将用户反馈规则追加到提示词的「用户反馈规则（自动添加）」区块中。
+
+        与 append_to_prompt 不同，此方法会将所有规则合并到同一个二级标题下，
+        避免反复创建重复的标题块。
+
+        Args:
+            name: 提示词名称
+            rule: 要追加的规则文本
+
+        Returns:
+            bool: 是否追加成功
+        """
+        import logging
+        _logger = logging.getLogger(__name__)
+
+        prompt = await self.repo.get_by_name(name)
+        if not prompt:
+            return False
+
+        existing = prompt.content or ""
+        section_marker = "## 用户反馈规则（自动添加）"
+
+        # 确保规则以 "- " 开头，保持列表格式
+        formatted_rule = rule.strip()
+        if not formatted_rule.startswith("- "):
+            formatted_rule = "- " + formatted_rule
+
+        if section_marker in existing:
+            # 已有区块：将规则追加到该区块内
+            parts = existing.split(section_marker, 1)
+            after_section = parts[1]
+
+            # 找到下一个二级标题的位置
+            next_h2_idx = after_section.find("\n## ")
+            new_content = formatted_rule + "\n"
+
+            if next_h2_idx != -1:
+                # 区块后面还有其他二级标题，在其前面插入
+                updated = parts[0] + section_marker + after_section[:next_h2_idx] + "\n" + new_content + after_section[next_h2_idx:]
+            else:
+                # 区块在文件末尾，直接追加
+                updated = parts[0] + section_marker + after_section.rstrip() + "\n" + new_content
+        else:
+            # 没有区块：在文件末尾创建新区块
+            updated = existing.rstrip() + "\n\n---\n\n" + section_marker + "\n\n" + formatted_rule + "\n"
+
+        # 写入 DB
+        prompt.content = updated
+        await self.session.commit()
+
+        # 更新缓存
+        prompt_read = PromptRead.model_validate(prompt)
+        async with _LOCK:
+            _CACHE[name] = prompt_read
+
+        # 同步到文件
+        self._sync_prompt_to_file(name, updated, _logger)
+
+        return True
+
+    @staticmethod
+    def _sync_prompt_to_file(name: str, content: str, logger: logging.Logger) -> None:
+        """将提示词内容全量写入文件，保持文件与 DB 一致。"""
+        import os
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        app_dir = os.path.dirname(current_dir)
+        backend_dir = os.path.dirname(app_dir)
+        prompts_dir = os.path.join(backend_dir, "prompts")
+        file_path = os.path.join(prompts_dir, f"{name}.md")
+
+        logger.info(f"尝试同步写入文件: {file_path}")
+
+        if os.path.exists(file_path):
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"已同步写入文件: {file_path}")
+        else:
+            logger.warning(f"提示词文件不存在，跳过文件同步: {file_path}")
 
     async def get_prompt_id_by_name(self, name: str) -> Optional[int]:
         """根据名称获取提示词ID。"""

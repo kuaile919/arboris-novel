@@ -3,8 +3,10 @@
 章节内容分层优化API
 支持对话、环境描写、心理活动、节奏韵律四个维度的深度优化
 """
+import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,6 +29,9 @@ from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 
 router = APIRouter(prefix="/api/optimizer", tags=["Optimizer"])
 logger = logging.getLogger(__name__)
+
+# 写作风格库文件写入锁，防止并发覆盖
+_style_file_lock = asyncio.Lock()
 
 
 class OptimizeRequest(BaseModel):
@@ -852,14 +857,19 @@ async def append_writing_style(
 
         cleaned_summary = remove_think_tags(summary_response).strip()
 
-        # 读取现有内容
-        with open(prompt_file, "r", encoding="utf-8") as f:
-            existing_content = f.read()
+        # 清洗 LLM 输出中的 markdown 标题标记，防止破坏文件结构
+        cleaned_summary = re.sub(r'^(#{1,3}\s+)', '- ', cleaned_summary, flags=re.MULTILINE)
 
-        # 检查是否已有"写作风格库"章节
-        if "# 写作风格库" not in existing_content:
-            # 如果没有，在文件末尾添加新章节
-            style_section = f"""
+        # 加锁防止并发写入覆盖
+        async with _style_file_lock:
+            # 读取现有内容
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+
+            # 检查是否已有"写作风格库"章节
+            if "# 写作风格库" not in existing_content:
+                # 如果没有，在文件末尾添加新章节
+                style_section = f"""
 
 ---
 
@@ -871,46 +881,46 @@ async def append_writing_style(
 
 {cleaned_summary}
 """
-        else:
-            # 如果已有，检查是否已有该维度的子章节
-            if f"## {dimension_name}" in existing_content:
-                # 追加到该维度下
-                dimension_marker = f"## {dimension_name}"
-                parts = existing_content.split(dimension_marker)
-
-                # 找到下一个 ## 的位置
-                after_dimension = parts[1]
-                next_section_idx = after_dimension.find("\n##")
-
-                if next_section_idx != -1:
-                    # 在下一个章节前插入
-                    before_next = after_dimension[:next_section_idx]
-                    after_next = after_dimension[next_section_idx:]
-                    style_section = parts[0] + dimension_marker + before_next + "\n" + cleaned_summary + "\n" + after_next
-                else:
-                    # 追加到文件末尾
-                    style_section = existing_content + "\n" + cleaned_summary + "\n"
             else:
-                # 在"写作风格库"章节下添加新维度
-                style_marker = "# 写作风格库"
-                parts = existing_content.split(style_marker)
+                # 如果已有，检查是否已有该维度的子章节
+                if f"## {dimension_name}" in existing_content:
+                    # 追加到该维度下（用 maxsplit=1 防止多次匹配丢失内容）
+                    dimension_marker = f"## {dimension_name}"
+                    parts = existing_content.split(dimension_marker, 1)
 
-                # 找到下一个 # 的位置（如果有）
-                after_style = parts[1]
-                next_chapter_idx = after_style.find("\n# ")
+                    # 精确匹配 "\n## " （带空格），排除 ### 误匹配
+                    after_dimension = parts[1]
+                    next_section_idx = after_dimension.find("\n## ")
 
-                if next_chapter_idx != -1:
-                    before_next = after_style[:next_chapter_idx]
-                    after_next = after_style[next_chapter_idx:]
-                    new_dimension_section = f"\n\n## {dimension_name}\n\n{cleaned_summary}\n"
-                    style_section = parts[0] + style_marker + before_next + new_dimension_section + after_next
+                    if next_section_idx != -1:
+                        # 在下一个二级章节前插入
+                        before_next = after_dimension[:next_section_idx]
+                        after_next = after_dimension[next_section_idx:]
+                        style_section = parts[0] + dimension_marker + before_next + "\n" + cleaned_summary + "\n" + after_next
+                    else:
+                        # 追加到文件末尾
+                        style_section = existing_content + "\n" + cleaned_summary + "\n"
                 else:
-                    new_dimension_section = f"\n\n## {dimension_name}\n\n{cleaned_summary}\n"
-                    style_section = existing_content + new_dimension_section
+                    # 在"写作风格库"章节下添加新维度（用 maxsplit=1）
+                    style_marker = "# 写作风格库"
+                    parts = existing_content.split(style_marker, 1)
 
-        # 写回文件
-        with open(prompt_file, "w", encoding="utf-8") as f:
-            f.write(style_section)
+                    # 找到下一个一级标题的位置（如果有）
+                    after_style = parts[1]
+                    next_chapter_idx = after_style.find("\n# ")
+
+                    if next_chapter_idx != -1:
+                        before_next = after_style[:next_chapter_idx]
+                        after_next = after_style[next_chapter_idx:]
+                        new_dimension_section = f"\n\n## {dimension_name}\n\n{cleaned_summary}\n"
+                        style_section = parts[0] + style_marker + before_next + new_dimension_section + after_next
+                    else:
+                        new_dimension_section = f"\n\n## {dimension_name}\n\n{cleaned_summary}\n"
+                        style_section = existing_content + new_dimension_section
+
+            # 写回文件
+            with open(prompt_file, "w", encoding="utf-8") as f:
+                f.write(style_section)
 
         logger.info(
             "用户 %s 追加了 %s 维度的写作风格到 writing_v2.md",
