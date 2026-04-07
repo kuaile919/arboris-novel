@@ -88,12 +88,39 @@ class OptimizeTaskStatusResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+class PolishSelectionRequest(BaseModel):
+    """选中文本局部润色请求"""
+
+    project_id: str = Field(..., description="项目ID")
+    chapter_number: int = Field(..., description="章节编号")
+    selected_text: str = Field(..., min_length=1, description="选中的待润色文本")
+    context_before: Optional[str] = Field(default=None, description="选区前文，用于保持衔接")
+    context_after: Optional[str] = Field(default=None, description="选区后文，用于保持衔接")
+    dimension: Optional[str] = Field(default=None, description="当前优化维度")
+    additional_notes: Optional[str] = Field(default=None, description="额外润色指令")
+
+
+class PolishSelectionResponse(BaseModel):
+    """选中文本局部润色响应"""
+
+    polished_text: str = Field(..., description="仅用于替换选中文本的新片段")
+    polish_notes: str = Field(..., description="局部润色说明")
+
+
 DIMENSION_PROMPT_MAP = {
     "dialogue": "optimize_dialogue",
     "environment": "optimize_environment",
     "psychology": "optimize_psychology",
     "logic": "optimize_logic",
     "rhythm": "optimize_rhythm"
+}
+
+DIMENSION_DISPLAY_MAP = {
+    "dialogue": "对话优化",
+    "environment": "环境描写",
+    "psychology": "心理活动",
+    "logic": "逻辑优化",
+    "rhythm": "节奏韵律",
 }
 
 # 默认的节奏优化提示词（如果数据库中没有）
@@ -139,6 +166,83 @@ DEFAULT_RHYTHM_PROMPT = """# 节奏韵律优化专家
 }
 ```
 """
+
+DEFAULT_SELECTION_POLISH_PROMPT = """# 小说局部润色专家
+
+你是一位擅长中文小说精修的编辑。你的任务是只改写用户选中的那一小段文字，让它更顺、更有画面感、更贴合指定优化方向，同时必须与前后文自然衔接。
+
+## 强约束
+1. 只能改写 `selected_text`，不要改动选区之外的内容。
+2. 输出必须是“可直接替换选中片段”的文本，不要包含前后文，不要加引号，不要解释。
+3. 保持原意、剧情事实、角色身份、称呼、时态、视角、世界观一致。
+4. 除非用户明确要求，不要新增设定、剧情推进、专有名词或关键信息。
+5. 尽量保持字数接近原文，只做必要的润色和微调。
+6. 如果原文已经比较好，就做轻量优化，不要过度雕琢。
+7. 用户主动点击“局部润色”时，默认需要返回一个确实经过润色的改写版本。除非文本短到改写会造成事实错误，否则不要直接输出与原文完全一致的内容。
+
+## 输入格式
+```json
+{
+  "focus_dimension": "当前优化方向，没有则为通用润色",
+  "selected_text": "选中的原文",
+  "context_before": "选区前文",
+  "context_after": "选区后文",
+  "additional_notes": "额外要求",
+  "character_dna": {
+    "角色名": "角色DNA描述"
+  }
+}
+```
+
+## 输出格式
+```json
+{
+  "polished_text": "只包含替换选中片段的新文本",
+  "polish_notes": "一句话说明本次润色重点"
+}
+```
+"""
+
+
+def _normalize_selection_text(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _selection_has_meaningful_change(original_text: str, polished_text: str) -> bool:
+    return _normalize_selection_text(original_text) != _normalize_selection_text(polished_text)
+
+
+async def _generate_selection_polish(
+    *,
+    llm_service: LLMService,
+    selection_prompt: str,
+    optimize_input: dict,
+    user_id: int,
+    max_tokens: int,
+) -> tuple[str, str]:
+    response = await llm_service.get_llm_response(
+        system_prompt=selection_prompt,
+        conversation_history=[{"role": "user", "content": json.dumps(optimize_input, ensure_ascii=False)}],
+        temperature=0.65,
+        user_id=user_id,
+        timeout=180.0,
+        max_tokens=max_tokens,
+    )
+
+    cleaned = remove_think_tags(response)
+    normalized = unwrap_markdown_json(cleaned)
+
+    try:
+        result = json.loads(normalized)
+        polished_text = str(result.get("polished_text", ""))
+        if not polished_text.strip():
+            polished_text = str(optimize_input.get("selected_text", ""))
+        polish_notes = str(result.get("polish_notes", "")).strip() or "已完成局部润色"
+    except json.JSONDecodeError:
+        polished_text = cleaned if cleaned.strip() else str(optimize_input.get("selected_text", ""))
+        polish_notes = "已完成局部润色（响应格式非标准JSON）"
+
+    return polished_text, polish_notes
 
 
 @router.post("/optimize", response_model=OptimizeResponse)
@@ -493,6 +597,126 @@ async def get_latest_optimization_result(
         optimization_notes=task.optimization_notes,
         error_message=task.error_message,
     )
+
+
+@router.post("/polish-selection", response_model=PolishSelectionResponse)
+async def polish_selected_text(
+    request: PolishSelectionRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> PolishSelectionResponse:
+    """
+    对用户选中的局部文本进行润色，只返回替换片段。
+    """
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    project = await novel_service.ensure_project_owner(request.project_id, current_user.id)
+    chapter = next((ch for ch in project.chapters if ch.chapter_number == request.chapter_number), None)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+
+    if request.dimension and request.dimension not in DIMENSION_PROMPT_MAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的优化维度: {request.dimension}，支持的维度: {list(DIMENSION_PROMPT_MAP.keys())}",
+        )
+
+    selection_prompt = await prompt_service.get_prompt("optimize_selection")
+    if not selection_prompt:
+        selection_prompt = DEFAULT_SELECTION_POLISH_PROMPT
+
+    character_dna = {}
+    if request.dimension == "psychology":
+        project_schema = await novel_service._serialize_project(project)
+        for char in project_schema.blueprint.characters:
+            if "extra" in char and "dna_profile" in char.get("extra", {}):
+                character_dna[char.get("name", "")] = char["extra"]["dna_profile"]
+
+    selected_text = request.selected_text
+    if not selected_text.strip():
+        raise HTTPException(status_code=400, detail="选中的文本不能为空")
+    optimize_input = {
+        "focus_dimension": DIMENSION_DISPLAY_MAP.get(request.dimension or "", "通用润色"),
+        "selected_text": selected_text,
+        "context_before": request.context_before or "",
+        "context_after": request.context_after or "",
+        "additional_notes": request.additional_notes or "无额外要求",
+    }
+    if character_dna:
+        optimize_input["character_dna"] = character_dna
+
+    logger.info(
+        "用户 %s 开始局部润色项目 %s 第 %s 章，维度: %s，选中文字数: %s",
+        current_user.id,
+        request.project_id,
+        request.chapter_number,
+        request.dimension or "general",
+        len(selected_text),
+    )
+
+    estimated_output_tokens = int(len(selected_text) / 1.2) + 800
+    max_tokens = max(1200, estimated_output_tokens)
+
+    try:
+        polished_text, polish_notes = await _generate_selection_polish(
+            llm_service=llm_service,
+            selection_prompt=selection_prompt,
+            optimize_input=optimize_input,
+            user_id=current_user.id,
+            max_tokens=max_tokens,
+        )
+
+        if not _selection_has_meaningful_change(selected_text, polished_text):
+            retry_input = dict(optimize_input)
+            force_rewrite_hint = (
+                "用户已经明确点击“局部润色”。请不要判断为无需改动，"
+                "请在不改变事实、专有名词和剧情信息的前提下，务必给出一版可感知但不过度的改写版本。"
+            )
+            retry_input["additional_notes"] = (
+                f"{request.additional_notes}\n{force_rewrite_hint}"
+                if request.additional_notes
+                else force_rewrite_hint
+            )
+            retry_input["rewrite_requirement"] = "must_rewrite"
+
+            logger.info(
+                "用户 %s 项目 %s 第 %s 章局部润色首次无改动，触发强制改写重试",
+                current_user.id,
+                request.project_id,
+                request.chapter_number,
+            )
+
+            retry_polished_text, retry_polish_notes = await _generate_selection_polish(
+                llm_service=llm_service,
+                selection_prompt=selection_prompt,
+                optimize_input=retry_input,
+                user_id=current_user.id,
+                max_tokens=max_tokens,
+            )
+
+            if _selection_has_meaningful_change(selected_text, retry_polished_text):
+                polished_text = retry_polished_text
+                polish_notes = retry_polish_notes
+            else:
+                polish_notes = f"{retry_polish_notes}；本次结果与原文一致，请补充更明确的润色方向"
+
+        return PolishSelectionResponse(
+            polished_text=polished_text,
+            polish_notes=polish_notes,
+        )
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章局部润色失败: %s",
+            request.project_id,
+            request.chapter_number,
+            exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"局部润色过程中发生错误: {str(exc)[:200]}",
+        )
 
 
 async def _ingest_optimized_chapter(

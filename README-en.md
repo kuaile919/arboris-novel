@@ -193,10 +193,11 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --reload-dir app --reload-dir prompts --port 8000
 ```
 
-Server listens on `http://127.0.0.1:8000` by default; use `--host` / `--port` or `--reload` as needed.
+Server listens on `http://127.0.0.1:8000` by default; use `--host` / `--port` as needed.
+For local development, prefer watching only `app` and `prompts` so changes under `backend/storage/logs/` do not cause repeated reloads.
 
 ### Frontend (local)
 

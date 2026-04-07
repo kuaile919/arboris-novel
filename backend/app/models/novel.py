@@ -96,6 +96,7 @@ class NovelBlueprint(Base):
     tone: Mapped[Optional[str]] = mapped_column(String(128))
     one_sentence_summary: Mapped[Optional[str]] = mapped_column(Text)
     full_synopsis: Mapped[Optional[str]] = mapped_column(LONG_TEXT_TYPE)
+    total_chapters: Mapped[int] = mapped_column(Integer, default=0)
     world_setting: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

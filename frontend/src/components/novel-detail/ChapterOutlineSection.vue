@@ -1,4 +1,3 @@
-<!-- AIMETA P=章节大纲区_大纲展示|R=大纲列表|NR=不含编辑功能|E=component:ChapterOutlineSection|X=ui|A=大纲组件|D=vue|S=dom|RD=./README.ai -->
 <template>
   <div class="space-y-6">
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -48,13 +47,12 @@
           <p class="mt-3 text-sm text-slate-600 leading-6 whitespace-pre-line">{{ chapter.summary || '暂无摘要' }}</p>
         </div>
       </li>
-      <li v-if="!outline.length" class="ml-6 text-slate-400 text-sm">暂无章节大纲</li>
+      <li v-if="!outline.length" class="ml-6 text-slate-400 text-sm">暂未生成章节大纲，后续可在写作台中单独生成。</li>
     </ol>
   </div>
 </template>
 
 <script setup lang="ts">
-
 interface OutlineItem {
   chapter_number: number
   title: string

@@ -9,6 +9,7 @@
       @go-back="goBack"
       @view-project-detail="viewProjectDetail"
       @toggle-sidebar="toggleSidebar"
+      @open-setting-chat="openBlueprintSettingChat"
     />
 
     <!-- 主要内容区域 -->
@@ -114,6 +115,12 @@
       @close="showChapterOutlineChatModal = false"
       @saved="onChapterOutlineChatSaved"
     />
+    <WDBlueprintSettingChatModal
+      :show="showBlueprintSettingChatModal"
+      :project-id="id"
+      @close="showBlueprintSettingChatModal = false"
+      @applied="onBlueprintSettingApplied"
+    />
   </div>
 </template>
 
@@ -121,7 +128,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
-import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, OutlinePreviewResponse } from '@/api/novel'
+import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject, OutlinePreviewResponse } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
@@ -132,6 +139,7 @@ import WDEvaluationDetailModal from '@/components/writing-desk/WDEvaluationDetai
 import WDEditChapterModal from '@/components/writing-desk/WDEditChapterModal.vue'
 import WDGenerateOutlineModal from '@/components/writing-desk/WDGenerateOutlineModal.vue'
 import WDChapterOutlineChatModal from '@/components/writing-desk/WDChapterOutlineChatModal.vue'
+import WDBlueprintSettingChatModal from '@/components/writing-desk/WDBlueprintSettingChatModal.vue'
 
 interface Props {
   id: string
@@ -155,6 +163,7 @@ const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
 const showChapterOutlineChatModal = ref(false)
+const showBlueprintSettingChatModal = ref(false)
 const chattingChapter = ref<ChapterOutline | null>(null)
 const outlinePreviewData = ref<OutlinePreviewResponse | null>(null)
 const isPreviewLoading = ref(false)
@@ -530,6 +539,16 @@ const openEditChapterModal = (chapter: ChapterOutline) => {
 const openChapterOutlineChatModal = (chapter: ChapterOutline) => {
   chattingChapter.value = chapter
   showChapterOutlineChatModal.value = true
+}
+
+const openBlueprintSettingChat = () => {
+  showBlueprintSettingChatModal.value = true
+}
+
+const onBlueprintSettingApplied = async (updatedProject: NovelProject) => {
+  novelStore.setCurrentProject(updatedProject)
+  await loadProject()
+  globalAlert.showSuccess('蓝图补设定已同步到写作台', '同步成功')
 }
 
 const onChapterOutlineChatSaved = async (updatedChapter: ChapterOutline) => {

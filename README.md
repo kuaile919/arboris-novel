@@ -210,10 +210,11 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --reload-dir app --reload-dir prompts --port 8000
 ```
 
-默认会监听 `http://127.0.0.1:8000`，你可以通过 `--host`、`--port` 调整，或加上 `--reload` 保持热重载。
+默认会监听 `http://127.0.0.1:8000`，你可以通过 `--host`、`--port` 调整。
+开发环境建议只监听 `app` 和 `prompts`，避免 `backend/storage/logs/` 等目录变化触发重复重载。
 
 ### 前端本地开发
 

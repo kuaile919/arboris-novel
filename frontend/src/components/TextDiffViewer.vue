@@ -82,7 +82,7 @@
             </div>
             <button
               v-if="editableOptimized"
-              @click="isEditingOptimized = !isEditingOptimized"
+              @click="toggleOptimizedEditing"
               class="px-2 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
             >
               {{ isEditingOptimized ? '完成编辑' : '编辑' }}
@@ -101,6 +101,9 @@
               ref="optimizedEditorEl"
               v-model="editedOptimizedText"
               class="optimized-editor block w-full min-h-[560px] max-h-[560px] overflow-auto bg-transparent text-sm leading-relaxed resize-none outline-none"
+              @select="emitOptimizedSelection"
+              @mouseup="emitOptimizedSelection"
+              @keyup="emitOptimizedSelection"
               @scroll="handleSideBySideScroll('optimized')"
               placeholder="可在这里人工微调优化后的内容..."
             ></textarea>
@@ -129,7 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import DiffMatchPatch from 'diff-match-patch';
 
 const props = defineProps({
@@ -149,6 +152,7 @@ const props = defineProps({
 
 const emit = defineEmits<{
   (e: 'update:optimizedText', value: string): void;
+  (e: 'selection-change', value: { text: string; start: number; end: number } | null): void;
 }>();
 
 const viewMode = ref<'inline' | 'sidebyside'>('inline');
@@ -173,6 +177,23 @@ watch(
 
 watch(editedOptimizedText, (value) => {
   emit('update:optimizedText', value);
+});
+
+watch(isEditingOptimized, (value) => {
+  if (!value) {
+    emit('selection-change', null);
+    return;
+  }
+
+  nextTick(() => {
+    focusOptimizedEditor();
+  });
+});
+
+watch(viewMode, (value) => {
+  if (value !== 'sidebyside' || !isEditingOptimized.value) {
+    emit('selection-change', null);
+  }
 });
 
 function handleSideBySideScroll(source: 'original' | 'optimized') {
@@ -214,6 +235,66 @@ function getScrollElement(side: 'original' | 'optimized'): HTMLElement | null {
     return optimizedEditorEl.value;
   }
   return optimizedScrollEl.value;
+}
+
+function emitOptimizedSelection() {
+  if (!props.editableOptimized || !isEditingOptimized.value || !optimizedEditorEl.value) {
+    emit('selection-change', null);
+    return;
+  }
+
+  const start = optimizedEditorEl.value.selectionStart ?? 0;
+  const end = optimizedEditorEl.value.selectionEnd ?? 0;
+
+  if (start === end) {
+    emit('selection-change', null);
+    return;
+  }
+
+  emit('selection-change', {
+    text: editedOptimizedText.value.slice(start, end),
+    start,
+    end
+  });
+}
+
+function toggleOptimizedEditing() {
+  isEditingOptimized.value = !isEditingOptimized.value;
+}
+
+function focusOptimizedEditor() {
+  const editor = optimizedEditorEl.value;
+  if (!editor) {
+    return;
+  }
+
+  try {
+    editor.focus({ preventScroll: true });
+  } catch {
+    editor.focus();
+  }
+}
+
+async function activateOptimizedEditing() {
+  viewMode.value = 'sidebyside';
+  if (!props.editableOptimized) {
+    return;
+  }
+  if (!isEditingOptimized.value) {
+    isEditingOptimized.value = true;
+  }
+  await nextTick();
+  focusOptimizedEditor();
+}
+
+function clearOptimizedSelection() {
+  const editor = optimizedEditorEl.value;
+  if (editor) {
+    const cursor = editor.selectionEnd ?? editor.selectionStart ?? 0;
+    focusOptimizedEditor();
+    editor.setSelectionRange(cursor, cursor);
+  }
+  emit('selection-change', null);
 }
 
 // 计算 diff
@@ -313,6 +394,11 @@ function escapeHtml(text: string): string {
 // 优化 diff（可选，提高性能）
 onMounted(() => {
   dmp.diff_cleanupSemantic(diffs.value);
+});
+
+defineExpose({
+  activateOptimizedEditing,
+  clearOptimizedSelection
 });
 </script>
 

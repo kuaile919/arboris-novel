@@ -222,14 +222,50 @@ class NovelService:
     # ------------------------------------------------------------------
     # 对话管理
     # ------------------------------------------------------------------
-    async def list_conversations(self, project_id: str) -> List[NovelConversation]:
+    @staticmethod
+    def _get_conversation_phase(conversation: NovelConversation) -> Optional[str]:
+        metadata = conversation.metadata if isinstance(conversation.metadata, dict) else {}
+        phase = metadata.get("phase")
+        return str(phase) if phase else None
+
+    @classmethod
+    def _matches_conversation_phase(
+        cls,
+        conversation: NovelConversation,
+        phase: str,
+        *,
+        include_legacy: bool = False,
+    ) -> bool:
+        conversation_phase = cls._get_conversation_phase(conversation)
+        if conversation_phase == phase:
+            return True
+        return include_legacy and phase == "concept" and not conversation_phase
+
+    async def list_conversations(
+        self,
+        project_id: str,
+        *,
+        phase: Optional[str] = None,
+        include_legacy: bool = False,
+    ) -> List[NovelConversation]:
         stmt = (
             select(NovelConversation)
             .where(NovelConversation.project_id == project_id)
             .order_by(NovelConversation.seq.asc())
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars())
+        conversations = list(result.scalars())
+        if not phase:
+            return conversations
+        return [
+            conversation
+            for conversation in conversations
+            if self._matches_conversation_phase(
+                conversation,
+                phase,
+                include_legacy=include_legacy,
+            )
+        ]
 
     async def append_conversation(self, project_id: str, role: str, content: str, metadata: Optional[Dict] = None) -> None:
         result = await self.session.execute(
@@ -248,6 +284,16 @@ class NovelService:
         await self.session.commit()
         await self._touch_project(project_id)
 
+    async def merge_conversation_metadata(self, project_id: str, conversation_id: int, metadata_patch: Dict[str, Any]) -> None:
+        conversation = await self.session.get(NovelConversation, conversation_id)
+        if not conversation or conversation.project_id != project_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="对话记录不存在")
+
+        existing_metadata = conversation.metadata if isinstance(conversation.metadata, dict) else {}
+        conversation.metadata = {**existing_metadata, **metadata_patch}
+        await self.session.commit()
+        await self._touch_project(project_id)
+
     # ------------------------------------------------------------------
     # 蓝图管理
     # ------------------------------------------------------------------
@@ -263,6 +309,7 @@ class NovelService:
         record.tone = blueprint.tone
         record.one_sentence_summary = blueprint.one_sentence_summary
         record.full_synopsis = blueprint.full_synopsis
+        record.total_chapters = blueprint.total_chapters or 0
         record.world_setting = blueprint.world_setting
 
         await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
@@ -322,10 +369,27 @@ class NovelService:
             blueprint = NovelBlueprint(project_id=project_id)
             self.session.add(blueprint)
 
+        if "title" in patch:
+            blueprint.title = patch["title"]
+            await self.session.execute(
+                update(NovelProject)
+                .where(NovelProject.id == project_id)
+                .values(title=patch["title"] or "未命名灵感")
+            )
+        if "target_audience" in patch:
+            blueprint.target_audience = patch["target_audience"]
+        if "genre" in patch:
+            blueprint.genre = patch["genre"]
+        if "style" in patch:
+            blueprint.style = patch["style"]
+        if "tone" in patch:
+            blueprint.tone = patch["tone"]
         if "one_sentence_summary" in patch:
             blueprint.one_sentence_summary = patch["one_sentence_summary"]
         if "full_synopsis" in patch:
             blueprint.full_synopsis = patch["full_synopsis"]
+        if "total_chapters" in patch:
+            blueprint.total_chapters = patch["total_chapters"] or 0
         if "world_setting" in patch and patch["world_setting"] is not None:
             # 创建新字典对象以触发 SQLAlchemy 的变更检测
             existing = blueprint.world_setting or {}
@@ -658,6 +722,7 @@ class NovelService:
         conversations = [
             {"role": convo.role, "content": convo.content}
             for convo in sorted(project.conversations, key=lambda c: c.seq)
+            if self._matches_conversation_phase(convo, "concept", include_legacy=True)
         ]
 
         blueprint_schema = self._build_blueprint_schema(project)
@@ -704,6 +769,7 @@ class NovelService:
                 tone=blueprint_obj.tone or "",
                 one_sentence_summary=blueprint_obj.one_sentence_summary or "",
                 full_synopsis=blueprint_obj.full_synopsis or "",
+                total_chapters=blueprint_obj.total_chapters or 0,
                 world_setting=blueprint_obj.world_setting or {},
                 characters=[
                     {
@@ -744,6 +810,7 @@ class NovelService:
             tone="",
             one_sentence_summary="",
             full_synopsis="",
+            total_chapters=0,
             world_setting={},
             characters=[],
             relationships=[],

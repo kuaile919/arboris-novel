@@ -75,7 +75,16 @@
   --md-on-warning-container: #5F4B08;
   
   /* Typography Scale */
-  --md-font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --md-font-family:
+    'Noto Sans SC',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Roboto',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
   --md-font-mono: 'Roboto Mono', monospace;
   
   /* Display */

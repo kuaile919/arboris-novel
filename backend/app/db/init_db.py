@@ -1,6 +1,5 @@
 # AIMETA P=数据库初始化_创建表和默认数据|R=创建表_初始化管理员|NR=不含业务逻辑|E=init_db|X=internal|A=初始化函数|D=sqlalchemy|S=db|RD=./README.ai
 import logging
-import os
 
 from pathlib import Path
 
@@ -78,7 +77,7 @@ async def init_db() -> None:
 
 async def _ensure_database_exists() -> None:
     """在首次连接前确认数据库存在，针对不同驱动做最小化准备工作。"""
-    if os.getenv("ARBORIS_SKIP_DATABASE_CREATE", "").strip().lower() in {"1", "true", "yes"}:
+    if settings.arboris_skip_database_create:
         return
 
     url = make_url(settings.sqlalchemy_database_uri)
@@ -155,6 +154,14 @@ async def _ensure_schema_updates() -> None:
                     )
                     logger.info("已为 blueprint_characters 表补充 is_protagonist 列")
 
+            if inspector.has_table("novel_blueprints"):
+                blueprint_cols = {col["name"] for col in inspector.get_columns("novel_blueprints")}
+                if "total_chapters" not in blueprint_cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE novel_blueprints ADD COLUMN total_chapters INTEGER DEFAULT 0")
+                    )
+                    logger.info("Added missing novel_blueprints.total_chapters column")
+
             _ensure_index(
                 "novel_conversations",
                 "ix_novel_conversations_project_id_seq",
@@ -185,6 +192,56 @@ async def _ensure_schema_updates() -> None:
                 "ix_key_locations_project_id_first_appear_chapter_id",
                 "project_id, first_appear_chapter, id",
             )
+
+            # ---- 趋势数据表新字段 ----
+            if inspector.has_table("trend_snapshots"):
+                snapshot_cols = {col["name"] for col in inspector.get_columns("trend_snapshots")}
+                if "data_source" not in snapshot_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_snapshots ADD COLUMN data_source VARCHAR(32) DEFAULT 'scraping'"))
+                    logger.info("已为 trend_snapshots 表补充 data_source 列")
+                if "data_quality_score" not in snapshot_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_snapshots ADD COLUMN data_quality_score FLOAT DEFAULT 0.0"))
+                    logger.info("已为 trend_snapshots 表补充 data_quality_score 列")
+                if "fetch_duration_ms" not in snapshot_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_snapshots ADD COLUMN fetch_duration_ms INTEGER DEFAULT 0"))
+                    logger.info("已为 trend_snapshots 表补充 fetch_duration_ms 列")
+                if "error_message" not in snapshot_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_snapshots ADD COLUMN error_message VARCHAR(512)"))
+                    logger.info("已为 trend_snapshots 表补充 error_message 列")
+
+            if inspector.has_table("ranking_books"):
+                book_cols = {col["name"] for col in inspector.get_columns("ranking_books")}
+                if "is_enriched" not in book_cols:
+                    sync_conn.execute(text("ALTER TABLE ranking_books ADD COLUMN is_enriched BOOLEAN DEFAULT 0"))
+                    logger.info("已为 ranking_books 表补充 is_enriched 列")
+                if "original_data" not in book_cols:
+                    sync_conn.execute(text("ALTER TABLE ranking_books ADD COLUMN original_data JSON"))
+                    logger.info("已为 ranking_books 表补充 original_data 列")
+
+            # ---- trend_reports 表新字段 ----
+            if inspector.has_table("trend_reports"):
+                report_cols = {col["name"] for col in inspector.get_columns("trend_reports")}
+                if "category" not in report_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_reports ADD COLUMN category VARCHAR(64) DEFAULT 'all'"))
+                    sync_conn.execute(text("UPDATE trend_reports SET category = 'all' WHERE category IS NULL"))
+                    logger.info("已为 trend_reports 表补充 category 列")
+                if "hot_elements" not in report_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_reports ADD COLUMN hot_elements JSON"))
+                    logger.info("已为 trend_reports 表补充 hot_elements 列")
+                if "reader_preferences" not in report_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_reports ADD COLUMN reader_preferences JSON"))
+                    logger.info("已为 trend_reports 表补充 reader_preferences 列")
+                if "opportunities" not in report_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_reports ADD COLUMN opportunities JSON"))
+                    logger.info("已为 trend_reports 表补充 opportunities 列")
+                if "creation_suggestions" not in report_cols:
+                    sync_conn.execute(text("ALTER TABLE trend_reports ADD COLUMN creation_suggestions JSON"))
+                    logger.info("已为 trend_reports 表补充 creation_suggestions 列")
+                _ensure_index(
+                    "trend_reports",
+                    "ix_trend_reports_platform_category_date",
+                    "platform, category, report_date",
+                )
 
         await conn.run_sync(_upgrade)
 

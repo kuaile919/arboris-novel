@@ -5,6 +5,7 @@ from . import (
     analytics,
     analytics_enhanced,
     auth,
+    blueprint_setting,
     foreshadowing,
     llm_config,
     novels,
@@ -12,6 +13,7 @@ from . import (
     projects,
     reference,
     review,
+    trends,
     updates,
     writer,
 )
@@ -19,6 +21,7 @@ from . import (
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(novels.router)
+api_router.include_router(blueprint_setting.router)
 api_router.include_router(writer.router)
 api_router.include_router(admin.router)
 api_router.include_router(updates.router)
@@ -30,3 +33,4 @@ api_router.include_router(foreshadowing.router)
 api_router.include_router(projects.router)
 api_router.include_router(review.router)
 api_router.include_router(reference.router)
+api_router.include_router(trends.router)

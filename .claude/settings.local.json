@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(IMA_CLIENT_ID=\"d44641cda00f4cd7c94a3e85c0508c1e\")",
+      "Bash(IMA_API_KEY=\"vontcr2S0dBZwoIpfVzzwgsTt4jQxgYpCPa9RUUQ5nBGmMLWLzuOhg02fiPsp1KnMqVs9b8L+A==\")",
+      "Bash(__NEW_LINE_59f7104f608b9a37__ curl:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://fanqienovel.com/api/author/misc/top_book_list/v1/?limit=5&offset=0\")",
+      "Bash(.venv/Scripts/python -c \":*)",
+      "Bash(.venv/Scripts/python.exe -c \"print\\(''ok''\\)\")",
+      "Bash(python -c \"print\\(''ok''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \":*)",
+      "Bash(python -c \":*)"
+    ]
+  }
+}

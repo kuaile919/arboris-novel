@@ -186,7 +186,7 @@
       <div
         v-if="showOptimizeResult"
         class="md-dialog-overlay"
-        @click.self="showOptimizeResult = false"
+        @click.self="closeOptimizeResult"
       >
         <div class="md-dialog m3-result-dialog flex flex-col">
           <div class="p-6 border-b" style="border-bottom-color: var(--md-outline-variant);">
@@ -196,7 +196,7 @@
                 <p class="md-body-small md-on-surface-variant mt-1">{{ optimizeResultNotes }}</p>
               </div>
               <button
-                @click="showOptimizeResult = false"
+                @click="closeOptimizeResult"
                 class="md-icon-btn md-ripple"
               >
                 <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
@@ -206,12 +206,108 @@
             </div>
           </div>
           <div class="flex-1 overflow-y-auto p-6">
+            <div class="m3-selection-polish-panel mb-5">
+              <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-semibold" style="color: var(--md-on-secondary-container);">局部润色</span>
+                    <span
+                      v-if="hasSelectionPolishTarget"
+                      class="m3-selection-badge"
+                    >
+                      已选 {{ selectedOptimizedCharCount }} 字
+                    </span>
+                  </div>
+                  <p class="text-sm leading-6" style="color: var(--md-on-secondary-container);">
+                    点“进入局部润色模式”后，在右侧优化稿里拖选一段文字，AI 只会改这段，并尽量保持前后文自然衔接。默认按通用润色处理，不继承整章优化维度。
+                  </p>
+                  <div class="m3-selection-mode-row">
+                    <span class="m3-selection-mode-label">润色方向</span>
+                    <div class="m3-selection-mode-list">
+                      <button
+                        v-for="mode in selectionPolishModeOptions"
+                        :key="mode.key"
+                        @click="selectionPolishMode = mode.key"
+                        :class="[
+                          'm3-selection-mode-chip',
+                          selectionPolishMode === mode.key ? 'm3-selection-mode-chip-active' : ''
+                        ]"
+                        type="button"
+                      >
+                        {{ mode.label }}
+                      </button>
+                    </div>
+                  </div>
+                  <p
+                    v-if="selectionPolishFeedback"
+                    class="text-xs font-medium"
+                    style="color: var(--md-primary);"
+                  >
+                    最近一次局部润色：{{ selectionPolishFeedback }}
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    @click="enterSelectionPolishMode"
+                    class="md-btn md-btn-tonal md-ripple"
+                  >
+                    进入局部润色模式
+                  </button>
+                  <button
+                    v-if="hasSelectionPolishTarget"
+                    @click="clearSelectedOptimizationText"
+                    class="md-btn md-btn-outlined md-ripple"
+                  >
+                    清除选择
+                  </button>
+                  <button
+                    v-if="lastSelectionPolish"
+                    @click="undoLastSelectionPolish"
+                    class="md-btn md-btn-outlined md-ripple"
+                  >
+                    撤销上次局部润色
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="hasSelectionPolishTarget"
+                class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] mt-4"
+              >
+                <div class="m3-selection-preview">
+                  <div class="m3-selection-preview-label">当前选中片段</div>
+                  <div class="m3-selection-preview-text">{{ selectedOptimizedText }}</div>
+                </div>
+
+                <div class="space-y-3">
+                  <textarea
+                    v-model="selectionPolishNotes"
+                    rows="4"
+                    class="md-textarea w-full resize-none"
+                    placeholder="可补充要求，例如：压迫感更强、语气更克制、动作更利落..."
+                  ></textarea>
+                  <button
+                    @click="polishSelectedText"
+                    :disabled="isPolishingSelection"
+                    class="md-btn md-btn-filled md-ripple w-full disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    <svg v-if="isPolishingSelection" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+                      <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+                    </svg>
+                    {{ isPolishingSelection ? '润色中...' : 'AI 润色选中片段' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <!-- 文本对比视图 -->
             <TextDiffViewer
+              ref="diffViewerRef"
               :original-text="originalContent"
               :optimized-text="optimizedContent"
               :editable-optimized="true"
               @update:optimized-text="optimizedContent = $event"
+              @selection-change="handleOptimizedSelectionChange"
             />
           </div>
           <div class="p-6 border-t flex justify-between gap-3" style="border-top-color: var(--md-outline-variant);">
@@ -230,7 +326,7 @@
             </button>
             <div class="flex gap-3">
               <button
-                @click="showOptimizeResult = false"
+                @click="closeOptimizeResult"
                 class="md-btn md-btn-outlined md-ripple"
               >
                 取消
@@ -361,7 +457,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Chapter } from '@/api/novel'
 import { OptimizerAPI } from '@/api/novel'
@@ -370,6 +466,21 @@ import TextDiffViewer from '@/components/TextDiffViewer.vue'
 interface Props {
   selectedChapter: Chapter
   projectId?: string
+}
+
+type OptimizeDimension = 'dialogue' | 'environment' | 'psychology' | 'logic' | 'rhythm'
+type SelectionPolishMode = 'general' | OptimizeDimension
+
+interface OptimizedSelectionRange {
+  start: number
+  end: number
+}
+
+interface SelectionPolishHistory {
+  previousContent: string
+  selectedText: string
+  polishedText: string
+  notes: string
 }
 
 const props = defineProps<Props>()
@@ -389,6 +500,14 @@ const optimizedContent = ref('')
 const optimizeResultNotes = ref('')
 const optimizeTaskId = ref<string | null>(null)
 const isCheckingOptimizeResult = ref(false)
+const diffViewerRef = ref<InstanceType<typeof TextDiffViewer> | null>(null)
+const selectedOptimizedText = ref('')
+const selectedOptimizedRange = ref<OptimizedSelectionRange | null>(null)
+const selectionPolishNotes = ref('')
+const selectionPolishFeedback = ref('')
+const selectionPolishMode = ref<SelectionPolishMode>('general')
+const isPolishingSelection = ref(false)
+const lastSelectionPolish = ref<SelectionPolishHistory | null>(null)
 let optimizePollingTimer: ReturnType<typeof setInterval> | null = null
 
 // 摘要相关状态
@@ -432,6 +551,21 @@ const optimizeDimensions = [
     label: '节奏韵律',
     description: '优化文字节奏，增强阅读体验'
   }
+]
+
+const hasSelectionPolishTarget = computed(() => {
+  return Boolean(selectedOptimizedRange.value && selectedOptimizedText.value.trim())
+})
+
+const selectedOptimizedCharCount = computed(() => selectedOptimizedText.value.length)
+
+const selectionPolishModeOptions: Array<{ key: SelectionPolishMode; label: string }> = [
+  { key: 'general', label: '通用润色' },
+  { key: 'dialogue', label: '对话' },
+  { key: 'environment', label: '环境' },
+  { key: 'psychology', label: '心理' },
+  { key: 'logic', label: '逻辑' },
+  { key: 'rhythm', label: '节奏' }
 ]
 
 const cleanVersionContent = (content: string): string => {
@@ -501,12 +635,139 @@ const stopOptimizePolling = () => {
   }
 }
 
+const SELECTION_CONTEXT_WINDOW = 180
+
+const resetOptimizedSelectionState = () => {
+  selectedOptimizedText.value = ''
+  selectedOptimizedRange.value = null
+}
+
+const clearSelectedOptimizationText = () => {
+  resetOptimizedSelectionState()
+  diffViewerRef.value?.clearOptimizedSelection()
+}
+
+const resetSelectionPolishState = () => {
+  resetOptimizedSelectionState()
+  diffViewerRef.value?.clearOptimizedSelection()
+  selectionPolishNotes.value = ''
+  selectionPolishFeedback.value = ''
+  selectionPolishMode.value = 'general'
+  isPolishingSelection.value = false
+  lastSelectionPolish.value = null
+}
+
+const closeOptimizeResult = () => {
+  showOptimizeResult.value = false
+  clearSelectedOptimizationText()
+}
+
+const enterSelectionPolishMode = async () => {
+  await diffViewerRef.value?.activateOptimizedEditing()
+}
+
+const buildSelectionContext = (content: string, start: number, end: number) => {
+  return {
+    contextBefore: content.slice(Math.max(0, start - SELECTION_CONTEXT_WINDOW), start),
+    contextAfter: content.slice(end, Math.min(content.length, end + SELECTION_CONTEXT_WINDOW))
+  }
+}
+
+const normalizeSelectionText = (text: string) => text.replace(/\s+/g, '')
+
+const handleOptimizedSelectionChange = (selection: { text: string; start: number; end: number } | null) => {
+  if (!selection || !selection.text.trim()) {
+    resetOptimizedSelectionState()
+    return
+  }
+
+  selectedOptimizedText.value = selection.text
+  selectedOptimizedRange.value = {
+    start: selection.start,
+    end: selection.end
+  }
+}
+
+const polishSelectedText = async () => {
+  if (!props.projectId || !selectedOptimizedRange.value) {
+    globalAlert.showError('请先选中要润色的文字')
+    return
+  }
+
+  const currentContent = optimizedContent.value
+  const { start, end } = selectedOptimizedRange.value
+  const selectedText = currentContent.slice(start, end)
+
+  if (!selectedText.trim()) {
+    globalAlert.showError('请先选中要润色的文字')
+    return
+  }
+
+  isPolishingSelection.value = true
+
+  try {
+    const { contextBefore, contextAfter } = buildSelectionContext(currentContent, start, end)
+    const result = await OptimizerAPI.polishSelection({
+      project_id: props.projectId,
+      chapter_number: props.selectedChapter.chapter_number,
+      selected_text: selectedText,
+      context_before: contextBefore,
+      context_after: contextAfter,
+      dimension: selectionPolishMode.value !== 'general' ? selectionPolishMode.value : undefined,
+      additional_notes: selectionPolishNotes.value.trim() || undefined
+    })
+
+    const polishedText = typeof result.polished_text === 'string' ? result.polished_text : ''
+    if (!polishedText.trim()) {
+      throw new Error('AI 未返回可替换的润色结果')
+    }
+
+    if (normalizeSelectionText(polishedText) === normalizeSelectionText(selectedText)) {
+      selectionPolishFeedback.value = result.polish_notes || '本次局部润色未产生改动'
+      globalAlert.showError(result.polish_notes || '本次局部润色未生成新版本，请补充更明确的要求后再试')
+      return
+    }
+
+    lastSelectionPolish.value = {
+      previousContent: currentContent,
+      selectedText,
+      polishedText,
+      notes: result.polish_notes || ''
+    }
+
+    optimizedContent.value = `${currentContent.slice(0, start)}${polishedText}${currentContent.slice(end)}`
+    selectionPolishFeedback.value = result.polish_notes || '已完成局部润色'
+    selectionPolishNotes.value = ''
+    resetOptimizedSelectionState()
+    diffViewerRef.value?.clearOptimizedSelection()
+    globalAlert.showSuccess('已完成局部润色，只替换了选中的内容')
+  } catch (error: any) {
+    console.error('局部润色失败:', error)
+    globalAlert.showError(error.message || '局部润色失败，请稍后重试')
+  } finally {
+    isPolishingSelection.value = false
+  }
+}
+
+const undoLastSelectionPolish = () => {
+  if (!lastSelectionPolish.value) return
+
+  optimizedContent.value = lastSelectionPolish.value.previousContent
+  selectionPolishFeedback.value = '已撤销上次局部润色'
+  selectionPolishNotes.value = ''
+  resetOptimizedSelectionState()
+  diffViewerRef.value?.clearOptimizedSelection()
+  lastSelectionPolish.value = null
+  globalAlert.showSuccess('已撤销上次局部润色')
+}
+
 const openOptimizeResultFromTask = (task: {
   dimension: string
   original_content?: string | null
   optimized_content?: string | null
   optimization_notes?: string | null
 }) => {
+  resetSelectionPolishState()
   selectedDimension.value = task.dimension
   originalContent.value = task.original_content || cleanVersionContent(props.selectedChapter.content || '')
   optimizedContent.value = task.optimized_content || ''
@@ -548,7 +809,7 @@ const startOptimize = async () => {
     const task = await OptimizerAPI.optimizeChapterAsync({
       project_id: props.projectId,
       chapter_number: props.selectedChapter.chapter_number,
-      dimension: selectedDimension.value as 'dialogue' | 'environment' | 'psychology' | 'logic' | 'rhythm',
+      dimension: selectedDimension.value as OptimizeDimension,
       additional_notes: additionalNotes.value || undefined
     })
     optimizeTaskId.value = task.task_id
@@ -607,6 +868,7 @@ const applyOptimization = async () => {
 
     globalAlert.showSuccess('优化内容已应用')
     showOptimizeResult.value = false
+    resetSelectionPolishState()
 
     // 重置状态
     selectedDimension.value = ''
@@ -788,6 +1050,97 @@ onBeforeUnmount(() => {
   border-color: var(--md-primary);
   background-color: var(--md-primary-container);
   box-shadow: var(--md-elevation-1);
+}
+
+.m3-selection-polish-panel {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 16px;
+  margin-bottom: 20px;
+  border-radius: var(--md-radius-lg);
+  border: 1px solid var(--md-outline-variant);
+  background: linear-gradient(135deg, var(--md-secondary-container), rgba(255, 255, 255, 0.92));
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.m3-selection-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--md-primary);
+  background-color: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+}
+
+.m3-selection-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.m3-selection-mode-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--md-on-surface-variant);
+}
+
+.m3-selection-mode-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.m3-selection-mode-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background-color: rgba(255, 255, 255, 0.74);
+  color: var(--md-on-surface-variant);
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.m3-selection-mode-chip:hover {
+  border-color: var(--md-primary);
+  color: var(--md-primary);
+}
+
+.m3-selection-mode-chip-active {
+  border-color: var(--md-primary);
+  background-color: rgba(103, 80, 164, 0.12);
+  color: var(--md-primary);
+  box-shadow: inset 0 0 0 1px rgba(103, 80, 164, 0.08);
+}
+
+.m3-selection-preview {
+  min-height: 156px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background-color: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.92);
+}
+
+.m3-selection-preview-label {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--md-on-surface-variant);
+}
+
+.m3-selection-preview-text {
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  color: var(--md-on-surface);
 }
 
 /* 摘要弹窗 - 固定宽度和高度 */

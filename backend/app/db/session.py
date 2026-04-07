@@ -28,4 +28,8 @@ AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI 依赖项：提供一个作用域内共享的数据库会话。"""
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise

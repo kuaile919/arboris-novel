@@ -214,8 +214,14 @@ class GenerateOutlineRequest(BaseModel):
 
 
 class BlueprintPatch(BaseModel):
+    title: Optional[str] = None
+    target_audience: Optional[str] = None
+    genre: Optional[str] = None
+    style: Optional[str] = None
+    tone: Optional[str] = None
     one_sentence_summary: Optional[str] = None
     full_synopsis: Optional[str] = None
+    total_chapters: Optional[int] = None
     world_setting: Optional[Dict[str, Any]] = None
     characters: Optional[List[Dict[str, Any]]] = None
     relationships: Optional[List[Relationship]] = None
@@ -225,6 +231,48 @@ class BlueprintPatch(BaseModel):
 class EditChapterRequest(BaseModel):
     chapter_number: int
     content: str
+
+
+class BlueprintSettingImpactAnalysis(BaseModel):
+    impact_level: str = "low"
+    summary: str = ""
+    impacted_sections: List[str] = Field(default_factory=list)
+    impacted_chapters: List[int] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
+
+
+class BlueprintSettingChatMessage(BaseModel):
+    id: int
+    role: str
+    message: str
+    phase: str = "post_blueprint_setting"
+    created_at: Optional[str] = None
+    applied_to_blueprint: bool = False
+    proposed_patch: Optional[BlueprintPatch] = None
+    impact_analysis: Optional[BlueprintSettingImpactAnalysis] = None
+    source: str = "blueprint_setting"
+
+
+class BlueprintSettingHistoryResponse(BaseModel):
+    history: List[BlueprintSettingChatMessage] = Field(default_factory=list)
+
+
+class BlueprintSettingConverseRequest(BaseModel):
+    user_message: str
+
+
+class BlueprintSettingConverseResponse(BaseModel):
+    ai_message: str
+    history: List[BlueprintSettingChatMessage] = Field(default_factory=list)
+    proposed_patch: Optional[BlueprintPatch] = None
+    impact_analysis: Optional[BlueprintSettingImpactAnalysis] = None
+    need_confirm: bool = False
+    latest_message_id: Optional[int] = None
+
+
+class ApplyBlueprintSettingPatchRequest(BaseModel):
+    patch: BlueprintPatch
+    assistant_message_id: Optional[int] = None
 
 
 class ChapterOutlineConverseRequest(BaseModel):

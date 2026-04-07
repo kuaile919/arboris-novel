@@ -2,6 +2,7 @@
 """FastAPI 应用入口，负责装配路由、依赖与生命周期管理。"""
 
 import logging
+import sys
 from logging.config import dictConfig
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +20,11 @@ from .api.routers import api_router
 LOG_DIR = Path(__file__).parent.parent / "storage" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "app.log"
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 dictConfig(
     {
@@ -41,8 +47,8 @@ dictConfig(
                 "class": "logging.handlers.RotatingFileHandler",
                 "formatter": "detailed",
                 "filename": str(LOG_FILE),
-                "maxBytes": 10485760,  # 10MB
-                "backupCount": 5,
+                "maxBytes": settings.log_file_max_mb * 1024 * 1024,
+                "backupCount": settings.log_file_backup_count,
                 "encoding": "utf-8",
             }
         },
@@ -88,7 +94,25 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as session:
         prompt_service = PromptService(session)
         await prompt_service.preload()
+
+    # 初始化定时任务调度器
+    scheduler = None
+    try:
+        from .services.trend.scheduled_tasks import init_scheduler, start_scheduler, shutdown_scheduler
+        scheduler = init_scheduler(AsyncSessionLocal)
+        if scheduler:
+            start_scheduler()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"定时任务初始化失败: {e}")
+
     yield
+
+    # 应用关闭时清理资源
+    if scheduler:
+        try:
+            shutdown_scheduler()
+        except Exception:
+            pass
 
 
 app = FastAPI(

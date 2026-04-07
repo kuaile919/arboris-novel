@@ -131,7 +131,7 @@ export interface BlueprintGenerationResponse {
 }
 
 export interface UIControl {
-  type: 'single_choice' | 'text_input'
+  type: 'single_choice' | 'text_input' | 'info_display'
   options?: Array<{ id: string; label: string }>
   placeholder?: string
 }
@@ -149,6 +149,51 @@ export interface ChapterOutlineConverseResponse {
     title: string
     summary: string
   }
+}
+
+export interface BlueprintSettingImpactAnalysis {
+  impact_level?: 'low' | 'medium' | 'high' | string
+  summary?: string
+  impacted_sections?: string[]
+  impacted_chapters?: number[]
+  recommended_actions?: string[]
+  [key: string]: any
+}
+
+export interface BlueprintSettingChatMessage {
+  id?: number
+  role: 'user' | 'assistant'
+  message: string
+  phase?: string
+  created_at?: string
+  proposed_patch?: Record<string, any> | null
+  impact_analysis?: BlueprintSettingImpactAnalysis | null
+  applied_to_blueprint?: boolean
+  source?: string
+  metadata?: Record<string, any> | null
+}
+
+export interface BlueprintSettingHistoryResponse {
+  messages?: BlueprintSettingChatMessage[]
+  history?: BlueprintSettingChatMessage[]
+}
+
+export interface BlueprintSettingConverseResponse {
+  message?: BlueprintSettingChatMessage
+  messages?: BlueprintSettingChatMessage[]
+  history?: BlueprintSettingChatMessage[]
+  ai_message?: string
+  proposed_patch?: Record<string, any> | null
+  impact_analysis?: BlueprintSettingImpactAnalysis | null
+  need_confirm?: boolean
+  latest_message_id?: number | null
+}
+
+export interface BlueprintSettingApplyResponse {
+  project?: NovelProject
+  ai_message?: string
+  message?: string
+  [key: string]: any
 }
 
 export interface OutlineChapterPreview {
@@ -420,6 +465,38 @@ export class NovelAPI {
     })
   }
 
+  static async getBlueprintSettingChatHistory(projectId: string): Promise<BlueprintSettingHistoryResponse> {
+    return request(`${NOVELS_BASE}/${projectId}/blueprint/setting-chat/history`, {
+      method: 'GET'
+    })
+  }
+
+  static async converseBlueprintSettingChat(
+    projectId: string,
+    userMessage: string
+  ): Promise<BlueprintSettingConverseResponse> {
+    return request(`${NOVELS_BASE}/${projectId}/blueprint/setting-chat/converse`, {
+      method: 'POST',
+      body: JSON.stringify({
+        user_message: userMessage
+      })
+    })
+  }
+
+  static async applyBlueprintSettingPatch(
+    projectId: string,
+    patch: Record<string, any>,
+    assistantMessageId?: number | null
+  ): Promise<BlueprintSettingApplyResponse | NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}/blueprint/setting-chat/apply`, {
+      method: 'POST',
+      body: JSON.stringify({
+        patch,
+        assistant_message_id: assistantMessageId ?? null
+      })
+    })
+  }
+
   /**
    * 同步世界设定（从章节大纲和摘要中提取地点和阵营）
    */
@@ -531,6 +608,21 @@ export interface SummaryResponse {
   has_summary: boolean
 }
 
+export interface PolishSelectionRequest {
+  project_id: string
+  chapter_number: number
+  selected_text: string
+  context_before?: string
+  context_after?: string
+  dimension?: 'dialogue' | 'environment' | 'psychology' | 'logic' | 'rhythm'
+  additional_notes?: string
+}
+
+export interface PolishSelectionResponse {
+  polished_text: string
+  polish_notes: string
+}
+
 // 优化API
 const OPTIMIZER_BASE = `${API_BASE_URL}${API_PREFIX}/optimizer`
 
@@ -577,6 +669,18 @@ export class OptimizerAPI {
     })
     return request(`${OPTIMIZER_BASE}/latest-optimization-result?${params}`, {
       method: 'GET'
+    })
+  }
+
+  /**
+   * 对选中的局部文本进行 AI 润色
+   */
+  static async polishSelection(
+    polishReq: PolishSelectionRequest
+  ): Promise<PolishSelectionResponse> {
+    return request(`${OPTIMIZER_BASE}/polish-selection`, {
+      method: 'POST',
+      body: JSON.stringify(polishReq)
     })
   }
 

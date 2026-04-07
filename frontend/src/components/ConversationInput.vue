@@ -1,13 +1,10 @@
-<!-- AIMETA P=对话输入_用户输入组件|R=输入框_发送|NR=不含消息展示|E=component:ConversationInput|X=internal|A=输入组件|D=vue|S=dom|RD=./README.ai -->
 <template>
   <div class="fade-in">
-    <!-- 加载状态 -->
     <div v-if="loading || !uiControl" class="flex justify-center items-center p-4">
       <div class="loader"></div>
     </div>
 
-    <!-- 单选题 -->
-    <div v-else-if="uiControl.type === 'single_choice'">
+    <div v-else-if="shouldShowChoices">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
         <button
           v-for="option in uiControl.options"
@@ -18,20 +15,26 @@
           {{ option.label }}
         </button>
         <button
+          v-if="shouldShowManualInputToggle"
           @click="isManualInput = true"
           class="p-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400"
         >
           我要输入
         </button>
       </div>
-      <form @submit.prevent="handleTextSubmit" class="flex items-center gap-3">
+
+      <form
+        v-if="shouldShowManualInputToggle"
+        @submit.prevent="handleTextSubmit"
+        class="flex items-center gap-3"
+      >
         <textarea
+          ref="textInputRef"
           v-model="textInput"
           :placeholder="isManualInput ? '请输入您的想法...' : '选择上方选项或点击“我要输入”'"
           class="w-full px-4 py-3 border border-gray-300 rounded-2xl focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none transition-all disabled:bg-gray-100 resize-none overflow-y-auto leading-relaxed"
           :disabled="!isManualInput"
           rows="5"
-          ref="textInputRef"
           @input="handleTextareaInput"
         ></textarea>
         <button
@@ -58,14 +61,17 @@
       </form>
     </div>
 
-    <!-- 文本输入 -->
-    <form v-else-if="uiControl.type === 'text_input'" @submit.prevent="handleTextSubmit" class="flex items-center gap-3">
+    <form
+      v-else-if="shouldShowTextInput"
+      @submit.prevent="handleTextSubmit"
+      class="flex items-center gap-3"
+    >
       <textarea
+        ref="textInputRef"
         v-model="textInput"
         :placeholder="uiControl.placeholder || '请输入...'"
         class="w-full px-4 py-3 border border-gray-300 rounded-2xl focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none transition-all resize-none overflow-y-auto leading-relaxed"
         required
-        ref="textInputRef"
         rows="5"
         @input="handleTextareaInput"
       ></textarea>
@@ -90,11 +96,16 @@
         </svg>
       </button>
     </form>
+
+    <div v-else class="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-500">
+      当前回复没有可交互选项，请刷新对话或重试上一轮输入。
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+
 import type { UIControl } from '@/api/novel'
 
 interface Props {
@@ -103,6 +114,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+
 const emit = defineEmits<{
   submit: [userInput: { id: string; value: string } | null]
 }>()
@@ -114,12 +126,23 @@ const isManualInput = ref(false)
 const MIN_ROWS = 5
 const MAX_ROWS = 5
 
+const shouldShowChoices = computed(() => {
+  if (!props.uiControl) {
+    return false
+  }
+
+  return (
+    props.uiControl.type === 'single_choice' ||
+    (Array.isArray(props.uiControl.options) && props.uiControl.options.length > 0)
+  )
+})
+
+const shouldShowManualInputToggle = computed(() => props.uiControl?.type === 'single_choice')
+const shouldShowTextInput = computed(() => props.uiControl?.type === 'text_input')
+
 const adjustTextareaHeight = () => {
   const textarea = textInputRef.value
-  if (!textarea) {
-    return
-  }
-  if (typeof window === 'undefined') {
+  if (!textarea || typeof window === 'undefined') {
     return
   }
 
@@ -148,11 +171,9 @@ const handleTextSubmit = () => {
   }
 }
 
-// 当输入控件变为文本输入时，自动聚焦
 watch(
   () => props.uiControl,
-  async (newControl) => {
-    // 每次控件更新时，都重置手动输入状态和文本内容
+  async newControl => {
     isManualInput.value = false
     textInput.value = ''
 
@@ -163,16 +184,14 @@ watch(
       textInputRef.value?.focus()
     }
   },
-  { deep: true } // 使用 deep watch 确保即使是相同类型的控件也能触发
+  { deep: true }
 )
 
-// 监听手动输入状态的变化，以聚焦输入框
-watch(isManualInput, async (newValue) => {
+watch(isManualInput, async newValue => {
   if (newValue) {
     await nextTick()
     adjustTextareaHeight()
     textInputRef.value?.focus()
   }
 })
-
 </script>

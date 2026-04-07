@@ -25,6 +25,18 @@ class Settings(BaseSettings):
         env="LOGGING_LEVEL",
         description="应用日志级别",
     )
+    log_file_max_mb: int = Field(
+        default=5,
+        ge=1,
+        env="LOG_FILE_MAX_MB",
+        description="单个日志文件的最大大小（MB）",
+    )
+    log_file_backup_count: int = Field(
+        default=5,
+        ge=1,
+        env="LOG_FILE_BACKUP_COUNT",
+        description="日志轮转时保留的历史文件数量",
+    )
     enable_linuxdo_login: bool = Field(
         default=False,
         env="ENABLE_LINUXDO_LOGIN",
@@ -56,6 +68,11 @@ class Settings(BaseSettings):
     mysql_user: str = Field(default="root", env="MYSQL_USER", description="MySQL 用户名")
     mysql_password: str = Field(default="", env="MYSQL_PASSWORD", description="MySQL 密码")
     mysql_database: str = Field(default="arboris", env="MYSQL_DATABASE", description="MySQL 数据库名称")
+    arboris_skip_database_create: bool = Field(
+        default=False,
+        env="ARBORIS_SKIP_DATABASE_CREATE",
+        description="是否跳过启动时的 CREATE DATABASE IF NOT EXISTS",
+    )
     sqlite_db_path: Optional[str] = Field(
         default=None,
         env="SQLITE_DB_PATH",

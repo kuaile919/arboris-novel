@@ -1,0 +1,543 @@
+{
+  "common": {
+    "id": "",
+    "mediaId": "",
+    "hasSerialPermission": false,
+    "hasAuthentication": false,
+    "name": "",
+    "avatar": "",
+    "isVip": false,
+    "isLoginModalVisible": false,
+    "callbackUrl": "",
+    "isLoading": true,
+    "needUpdate": true,
+    "isShowLogin": true,
+    "hasRegistered": false,
+    "needLogout": false,
+    "css": "@font-face{font-family:DNMrHsV173Pd4pgy;font-display:block;src:url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd.woff2)format(\"woff2\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd.woff2)format(\"woff2\"),url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd.woff)format(\"woff\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd.woff)format(\"woff\"),url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd.otf)format(\"opentype\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd.otf)format(\"opentype\");font-weight:400;}@font-face{font-family:DNMrHsV173Pd4pgy;font-display:block;src:url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-500.woff2)format(\"woff2\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-500.woff2)format(\"woff2\"),url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-500.woff)format(\"woff\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-500.woff)format(\"woff\"),url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-500.otf)format(\"opentype\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-500.otf)format(\"opentype\");font-weight:500;}@font-face{font-family:DNMrHsV173Pd4pgy;font-display:block;src:url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-700.woff2)format(\"woff2\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-700.woff2)format(\"woff2\"),url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-700.woff)format(\"woff\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-700.woff)format(\"woff\"),url(https://lf6-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-700.otf)format(\"opentype\"),url(https://lf3-awef.bytetos.com/obj/awesome-font/c/dc027189e0ba4cd-700.otf)format(\"opentype\");font-weight:700;}",
+    "firstBookGender": -1,
+    "now": 0,
+    "reLoginModalVisible": false,
+    "reLoginModalTitle": "",
+    "reLoginModalDesc": "",
+    "loginTime": 0,
+    "isVip2d": false,
+    "aiImageEntryVisible": false
+  },
+  "home": {
+    "serverRendered": false,
+    "noticeList": null,
+    "bannerList": null,
+    "writerList": null,
+    "editorList": null,
+    "weekList": null,
+    "boyList": null,
+    "girlList": null,
+    "subscribeList": null,
+    "workhardList": null,
+    "newbookList": null,
+    "updateList": null,
+    "readRankList": null,
+    "newRankList": null,
+    "fantasyList": null,
+    "minorityMaleList": null,
+    "presentWordsList": null,
+    "oldSayingList": null,
+    "minorityFemaleList": null,
+    "maleRenderString": "",
+    "femaleRenderString": "",
+    "topRankList": null,
+    "newWriterList": null
+  },
+  "search": {
+    "searchBookList": null,
+    "authorData": null,
+    "total": 0,
+    "loading": true
+  },
+  "rank": {
+    "serverRendered": true,
+    "book_list": [
+      {
+        "category": "",
+        "creationStatus": "0",
+        "wordNumber": "1163967",
+        "author": "空留",
+        "lastChapterItemId": "7398648201110094361",
+        "lastChapterTitle": "第550章 终（完结）",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2oe82e12ce69eb1e8bb626cfe46f1ca5c1~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=cyKfgXFXlKTAhVupAMerm2Azth0%3D",
+        "bookId": "7231424472606051384",
+        "firstChapterItemId": "7256994009498223144",
+        "abstract": "(影视版权售，签约版)\n虞。\n刻闪雷鸣，轰塌排杂屋，连暴雨滔患，灾众,京城渐传言灾星降。\n偏早慧妖，忘，坏，流言越传越邪乎，连宫。\n众愿，虞慧极早夭。\n五，镇守境忠勇侯叛城，忠勇侯府获罪，骂忠义，连早夭灾星提及。\n临窗坐虞，灾星？坐。",
+        "bookName": "惹枝",
+        "lastChapterUpdateTime": "1722632077",
+        "categoryV2": "",
+        "readCount": "0",
+        "uid": "4393263683600765",
+        "rankPosDiff": 0,
+        "currentPos": 1,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "548330"
+      },
+      {
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2oeb0bae6306083d052e52c421f5bed7b0~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=RWe6IwwOEOJLCdXiRkFTxp%2Bt4Ns%3D",
+        "bookId": "7289383132648705082",
+        "author": "羡鱼珂",
+        "lastChapterTitle": "出版番外 欲买桂花同载酒",
+        "bookName": "舟渡",
+        "creationStatus": "0",
+        "abstract": "〈网购〉\n【指穿越，纯古言+智商谍权谋】\n【卧底双谍+型贼：匹孤狼玩养游戏兔养獠牙非跟双宿双飞故】\n乱草芥贼，极\n偷纹银，殊臭昭著叛，沾胞鲜血。\n蹿跳求欲竟激兴致，燃炷香，跟玩玩逃杀游戏。\n“炷香逃跑，抓，否则——\n劫复。”\n逃，改换嫁妻，稳余，抬，温柔危险唤“嫂嫂”。\n输游戏，奴。\n，铁扔刀火滚遭，竟，锤炼刀枪铠甲，乱凭介脊梁骨站。\n似江舟，渡程，隐黑暗。底谁？\n迢迢，归遥遥。迷途，舟渡？\n\n【架空仿宋，参考靖康耻、南宋建历史背景。型，请勿号座，请勿考究】",
+        "firstChapterItemId": "7291877939145081356",
+        "wordNumber": "483628",
+        "category": "",
+        "readCount": "0",
+        "lastChapterUpdateTime": "1767169977",
+        "lastChapterItemId": "7562183294335337022",
+        "categoryV2": "",
+        "uid": "1049346978351911",
+        "rankPosDiff": 0,
+        "currentPos": 2,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "380317"
+      },
+      {
+        "abstract": "【影视版权售】【版】\n序拥切。\n显赫百、令嫉妒赋、步步升仕途。\n趣。\n突遭，灵魂。\n识、妄图攀枝凤凰。\n·\n陈宝香乡千迢迢赶京，凭姿嫁贵。\n贪慕富贵、阿谀奉承、拜踩低、唯图。\n尽切段，青睐。\n灰冷陈宝香算乡，谁料脑突：\n“照，保飞枝。”\n·\n富贵魂移贪财、共躯，替挂攀枝故。",
+        "lastChapterTitle": "番外 新春番外 故人来信&新年快乐",
+        "author": "鹭双",
+        "firstChapterItemId": "7402203973521769022",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2o0efbc2a236d5e239df84192ad8e48476~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=bZM%2FzcGQea9rItY5fUwPopJpFbw%3D",
+        "lastChapterItemId": "7462408260604133912",
+        "category": "",
+        "lastChapterUpdateTime": "1737477623",
+        "categoryV2": "",
+        "wordNumber": "424158",
+        "creationStatus": "0",
+        "bookName": "攀枝",
+        "readCount": "0",
+        "bookId": "7402200659753176126",
+        "uid": "99013743845",
+        "rankPosDiff": 0,
+        "currentPos": 3,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "347865"
+      },
+      {
+        "lastChapterItemId": "7607189475407430206",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2o370332dd11d153e298a299f1a4a95773~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=HM4Gh9CENY6SGix7jyKeyEAt%2F%2Fg%3D",
+        "lastChapterUpdateTime": "1771187657",
+        "bookName": "逢灯纪",
+        "categoryV2": "",
+        "readCount": "0",
+        "firstChapterItemId": "7501543648241140249",
+        "bookId": "7501543539474435097",
+        "category": "",
+        "creationStatus": "0",
+        "author": "空留",
+        "lastChapterTitle": "第471章 未完待续",
+        "abstract": "侯府，嫁妆尸骨？\n。止嫁妆尸骨，离，及断。\n假，兄弟背隐形，？\n。止姓，产，尽展抱负。\n救婆婆脱离苦？\n。止婆婆，依靠。\n……\n逢灯，，委托存。\n狱爬兰烬，‘逢灯’足。\n步步，织造罗网。\n废妃委托，，仇。",
+        "wordNumber": "982857",
+        "uid": "4393263683600765",
+        "rankPosDiff": 0,
+        "currentPos": 4,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "270289"
+      },
+      {
+        "lastChapterItemId": "7465617443403088409",
+        "bookId": "7200738711116450877",
+        "categoryV2": "",
+        "lastChapterTitle": "番外 穿回现代（完）",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2ocf81ff2df3cca327efc3d91195447bd2~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=QFgSK07ga4DqSy5QAz7JGzsdfhI%3D",
+        "bookName": "掌娇娇",
+        "abstract": "【阅指南：甜宠双洁爽，智斗权谋，伏笔细节，刻画，亏，填坑，松阅读】\n　　宣王贺钧廷。\n　　《独宠皇妃》，屠尽北狄王庭，披甲造反连破二城，六冷酷骨薄，，终茕茕孑疯燃火皇宫。\n***\n　　薛清茵穿骄纵配，爹疼兄，恋脑，偏偏弃若敝履，迫嫁流魏王，夜夜守空房，局凄惨。\n　　，胆，选宣王！\n　　反早，钱寡妇。\n　　\n　　薛清茵娇，王府久，贺钧廷背，\n　　，拿夜夜腰疼腿软换！哪守空房？\n　　啊。\n　　读！宣王冷酷寡近？\n***\n　　，薛清茵跃御红，追捧，运改。寡妇。\n***\n　　……\n　　剑，护甲。\n　　彼屈灵魂。\n***\n　　宣王早喜欢假，妨。\n　　荒诞丑恶，唯。",
+        "readCount": "0",
+        "author": "支云",
+        "lastChapterUpdateTime": "1738224704",
+        "firstChapterItemId": "7201055148016140800",
+        "category": "",
+        "wordNumber": "907689",
+        "creationStatus": "0",
+        "uid": "4112647581348991",
+        "rankPosDiff": 0,
+        "currentPos": 5,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "254991"
+      },
+      {
+        "creationStatus": "0",
+        "wordNumber": "4112215",
+        "abstract": "【签版】局即逃亡，乱诸侯。\n林皇（林环）穿县令，局流攻城！\n穿越斗宅斗，穿越逃荒。\n刚“”背景，林皇临城破亡绝境。\n流破城，县令爹吓破胆。\n林皇废墟崛，绝境志，夺爹权，。\n指，系统挂，乱奢侈——顶级脑。\n林皇座危城，赌争霸；\n谎言，收支溃兵；\n承诺，聚。\n，野。\n持朝堂，群雄割据，朝廷摇摇欲坠。\n乱、、礼崩坏、聊。\n林皇：既，。欲疆，晏河清！\n靠，嫁，娶贤，。\n林皇步算百步，强悍皇磨刀石，锋刀。\n错，乱逃亡，帝硬核逆袭史。\n【+权谋+争霸+群+系统】\n强强，强强。\n？。。\n争霸，棋。\n：，且，温南。",
+        "lastChapterUpdateTime": "1748088718",
+        "bookName": "乱逃亡，帝",
+        "author": "南婉徐",
+        "lastChapterTitle": "番外 异世穿越篇——王琳语（完）",
+        "readCount": "0",
+        "lastChapterItemId": "7507610614244573721",
+        "firstChapterItemId": "7051426204695396867",
+        "categoryV2": "",
+        "bookId": "7051415434632891403",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/851cba9b1f6b70a49f30779daf743229~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=wEvaAmVJxJrExcgUmOKGsLgawfM%3D",
+        "category": "",
+        "uid": "4108238634623150",
+        "rankPosDiff": 0,
+        "currentPos": 6,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "229365"
+      },
+      {
+        "firstChapterItemId": "7423691444830863934",
+        "lastChapterTitle": "第1104章 树上悬帅",
+        "author": "墨墨",
+        "lastChapterUpdateTime": "1774874418",
+        "readCount": "0",
+        "bookId": "7423691438321323070",
+        "abstract": "【穿越+争霸+乱++逃荒+基建++空】\n   ：穿乱，疯癫靠抢劫建\n        姜瑾醒亡，送梁城蛮族蛟凉玩。\n        ，玩较，局押送兵噶。\n　　未婚姐姐暗陈仓推挡刀，谅，瞬匕首送：“系，，债消。”\n\n　　收批兵，周睢摸尸组合。\n\n　　转杀梁城狙蛟凉，抢粮仓库，烧郡守府，梁城夜翻覆！\n\n　　蛮族派骑兵追杀，反灭，忘交：“杀，。”\n\n　　匪抢粮，兵练，杀匪巢：“干留，劳。”\n\n　　五胡乱华乱黑暗乱，蛮族侵，哀鸿遍野，各势互角逐，狱。\n　　艰险逃亡，抢粮抢钱，练兵秣，终攒底。\n       姜瑾始攻城略，汉土蛮族寸寸夺。\n　　，救臣，遇良，抚苍，乱强悍杀血，创独属霸!",
+        "bookName": "穿乱，疯癫靠抢劫建",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2o374d324c6c9a0170d688aaeb9a4a9f60~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=NLTlPjffOD22A68vho1Pr0btSgY%3D",
+        "category": "",
+        "categoryV2": "",
+        "wordNumber": "2303259",
+        "lastChapterItemId": "7623027446740156990",
+        "creationStatus": "1",
+        "uid": "1389374297870536",
+        "rankPosDiff": 0,
+        "currentPos": 7,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "191735"
+      },
+      {
+        "author": "喰梦",
+        "lastChapterTitle": "第591章 完结撒花~",
+        "categoryV2": "",
+        "category": "",
+        "lastChapterItemId": "7582078152390738456",
+        "creationStatus": "0",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2o93264a700ca6bfb32311c95ec11f419d~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=1bct3JN7xxjjb6lP8a224Mi6p%2FE%3D",
+        "bookName": "穿荒，假千杀",
+        "lastChapterUpdateTime": "1765340479",
+        "abstract": "古言穿越 | 强权谋 | 逃荒田\n「消息：穿千姐。\n坏消息：刚睁流匪储备粮！」\n宋钰睁，竟穿邺沈扒甲假千。\n，爹娘扔乡，差流匪啃骨剩——\n 朝廷，灾祸，百姓深浴火，聊。\n宋钰……\n，舒，痛。\n乱？\n苦，罪，。\n……捅窟窿！\n：宋钰 | ：周霁",
+        "bookId": "7461815080997375000",
+        "firstChapterItemId": "7461815083933368856",
+        "readCount": "0",
+        "wordNumber": "1238403",
+        "uid": "92720517943",
+        "rankPosDiff": 0,
+        "currentPos": 8,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "165661"
+      },
+      {
+        "bookName": "爷流福星",
+        "creationStatus": "1",
+        "category": "",
+        "readCount": "0",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2o3a7fb5e710ef546ac1a21a75e3530931~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=ZMa6VNHs%2BcrDO8JeI5%2BByJKgxb4%3D",
+        "lastChapterTitle": "第149章 第一百四十九章",
+        "lastChapterUpdateTime": "1774258538",
+        "bookId": "7596177744468118590",
+        "firstChapterItemId": "7596177942099526206",
+        "abstract": "【流+绑治愈】\n府笨丫鬟，牢娘：，赎。爷跌落泥潭刻，脑“”另覆盖。赎钱，换伤药食。傻，废赌切。蛰伏旧终寻，誓效忠，温柔、遍遍。",
+        "wordNumber": "341613",
+        "lastChapterItemId": "7620372171369497150",
+        "author": "躲雷遇雷",
+        "categoryV2": "",
+        "uid": "4332541746872606",
+        "rankPosDiff": 0,
+        "currentPos": 9,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "133550"
+      },
+      {
+        "author": "赵骗",
+        "lastChapterItemId": "7609339592600191513",
+        "wordNumber": "1078911",
+        "readCount": "0",
+        "category": "",
+        "lastChapterTitle": "番外 二三小事（8）",
+        "categoryV2": "",
+        "firstChapterItemId": "7485232987894727193",
+        "bookName": "纨绔郡宠",
+        "thumbUri": "https://p3-reading-sign.fqnovelpic.com/novel-pic/p2o898a78361cf265bb15cca0ed99c9feaf~tplv-resize:225:0.image?lk3s=5b7047ff&x-expires=1775530102&x-signature=beHYa94zyyisZqllPT4OSnc7xY0%3D",
+        "creationStatus": "0",
+        "lastChapterUpdateTime": "1771687645",
+        "bookId": "7485232984434412569",
+        "abstract": "签版 预计底\n！！言！！！！！\n 穿越  纯恶 权谋\n 纯恶 权谋 疯批 凶残 黑肝\n产疑答 \n镇北王府刁蛮跋扈郡河裴嫡裴瑾，跟婚约崔姐差淹。\n皇帝赶京城，送雀寺苦修赎罪。\n，胜仗镇北王功勋换秦枝京，众皆待秦枝落魄凄惨模，谁京秦枝嚣依旧，城街掉皇牙！\n仗帝宠竟诬陷裴瑾毒害，裴瑾救退婚约，请求皇帝赐婚。\n切尘埃落，裴瑾嚣跋扈郡喜欢。\n婚另隐！\n\n阻拦，拜倒秦枝伦权势。\n\n泥潭，梦妄攀根枝！\n\n",
+        "uid": "95110887399",
+        "rankPosDiff": 0,
+        "currentPos": 10,
+        "curent_category_id": 1139,
+        "pos_category_id": 1139,
+        "read_count": "128412"
+      }
+    ],
+    "readRankList": null,
+    "newRankList": null,
+    "rankCategoryTypeList": {
+      "male": [
+        {
+          "id": "1141",
+          "name": "西方奇幻"
+        },
+        {
+          "id": "1140",
+          "name": "东方仙侠"
+        },
+        {
+          "id": "8",
+          "name": "科幻末世"
+        },
+        {
+          "id": "261",
+          "name": "都市日常"
+        },
+        {
+          "id": "124",
+          "name": "都市修真"
+        },
+        {
+          "id": "1014",
+          "name": "都市高武"
+        },
+        {
+          "id": "273",
+          "name": "历史古代"
+        },
+        {
+          "id": "27",
+          "name": "战神赘婿"
+        },
+        {
+          "id": "263",
+          "name": "都市种田"
+        },
+        {
+          "id": "258",
+          "name": "传统玄幻"
+        },
+        {
+          "id": "272",
+          "name": "历史脑洞"
+        },
+        {
+          "id": "539",
+          "name": "悬疑脑洞"
+        },
+        {
+          "id": "262",
+          "name": "都市脑洞"
+        },
+        {
+          "id": "257",
+          "name": "玄幻脑洞"
+        },
+        {
+          "id": "751",
+          "name": "悬疑灵异"
+        },
+        {
+          "id": "504",
+          "name": "抗战谍战"
+        },
+        {
+          "id": "746",
+          "name": "游戏体育"
+        },
+        {
+          "id": "718",
+          "name": "动漫衍生"
+        },
+        {
+          "id": "1016",
+          "name": "男频衍生"
+        }
+      ],
+      "female": [
+        {
+          "id": "1139",
+          "name": "古风世情"
+        },
+        {
+          "id": "8",
+          "name": "科幻末世"
+        },
+        {
+          "id": "746",
+          "name": "游戏体育"
+        },
+        {
+          "id": "1015",
+          "name": "女频衍生"
+        },
+        {
+          "id": "248",
+          "name": "玄幻言情"
+        },
+        {
+          "id": "23",
+          "name": "种田"
+        },
+        {
+          "id": "79",
+          "name": "年代"
+        },
+        {
+          "id": "267",
+          "name": "现言脑洞"
+        },
+        {
+          "id": "246",
+          "name": "宫斗宅斗"
+        },
+        {
+          "id": "539",
+          "name": "悬疑脑洞"
+        },
+        {
+          "id": "253",
+          "name": "古言脑洞"
+        },
+        {
+          "id": "24",
+          "name": "快穿"
+        },
+        {
+          "id": "749",
+          "name": "青春甜宠"
+        },
+        {
+          "id": "745",
+          "name": "星光璀璨"
+        },
+        {
+          "id": "747",
+          "name": "女频悬疑"
+        },
+        {
+          "id": "750",
+          "name": "职场婚恋"
+        },
+        {
+          "id": "748",
+          "name": "豪门总裁"
+        },
+        {
+          "id": "1017",
+          "name": "民国言情"
+        }
+      ]
+    },
+    "defaultPage": 1,
+    "total_num": 100,
+    "rankVersion": "1774924800",
+    "rankTypeText": "",
+    "loading": false
+  },
+  "page": {
+    "hasFetch": false,
+    "author": "",
+    "authorId": "",
+    "bookId": "",
+    "mediaId": "",
+    "bookName": "",
+    "status": -1,
+    "category": "",
+    "categoryV2": "",
+    "abstract": "",
+    "thumbUri": "",
+    "creationStatus": -1,
+    "wordNumber": 0,
+    "readCount": 0,
+    "description": "",
+    "avatarUri": "",
+    "creatorId": "",
+    "lastPublishTime": "",
+    "lastChapterItemId": "",
+    "lastChapterTitle": "",
+    "volumeNameList": [],
+    "chapterListWithVolume": [],
+    "chapterTotal": 0,
+    "followStatus": -1,
+    "itemIds": [],
+    "hasFetchDirectory": false,
+    "chapterList": [],
+    "serverRendered": false,
+    "genre": 0,
+    "platform": 2,
+    "type": "0",
+    "originalAuthors": ""
+  },
+  "reader": {
+    "phoneUrl": "",
+    "chapterData": {},
+    "preChapterData": {},
+    "nextChapterData": {},
+    "catalogData": {},
+    "fmReadEnable": false
+  },
+  "preview": {
+    "chapterData": null
+  },
+  "welfare": {
+    "serverRendered": false,
+    "editorList": []
+  },
+  "theme": {
+    "header": {
+      "bg": "#ffffff",
+      "theme": 1,
+      "isDefault": true
+    }
+  },
+  "seo": {
+    "voteLinkList": [],
+    "innerLinkList": [],
+    "isSpider": false,
+    "showFriendLink": false
+  },
+  "comment": {
+    "data": {},
+    "hasFetch": false
+  },
+  "imc": {
+    "data": {}
+  },
+  "author": {
+    "userInfo": {
+      "username": "",
+      "avatar": "",
+      "description": "",
+      "authorize_type": 0,
+      "word_count": "",
+      "word_count_unit": "",
+      "origin_word_count": "",
+      "origin_fans_count": "",
+      "creation_days": 0,
+      "fans_count": "",
+      "fans_count_unit": "",
+      "author_id": "",
+      "user_id": ""
+    },
+    "bookListRes": {
+      "book_list": [],
+      "total_count": 0
+    },
+    "name": "",
+    "serverRendered": false
+  },
+  "libra": {},
+  "readProgress": {
+    "read_progress": {},
+    "read_items_progress": {},
+    "ready": false,
+    "read_items_ready": false
+  }
+}

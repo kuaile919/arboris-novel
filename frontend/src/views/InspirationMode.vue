@@ -233,6 +233,7 @@ const restoreConversation = async (projectId: string) => {
       const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
       if (lastAssistantMsgStr) {
         const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
+        novelStore.currentConversationState = lastAssistantMsg.conversation_state || {}
         
         if (lastAssistantMsg.is_complete) {
           // 如果对话已完成，直接显示蓝图确认界面

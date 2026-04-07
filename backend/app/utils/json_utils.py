@@ -1,4 +1,5 @@
 # AIMETA P=JSON工具_JSON解析和修复|R=安全解析_格式修复|NR=不含业务逻辑|E=parse_json_safely|X=internal|A=工具函数|D=json|S=none|RD=./README.ai
+import json
 import re
 
 
@@ -16,15 +17,17 @@ def unwrap_markdown_json(raw_text: str) -> str:
 
     trimmed = raw_text.strip()
 
-    fence_match = re.search(r"```(?:json|JSON)?\s*(.*?)\s*```", trimmed, re.DOTALL)
-    if fence_match:
-        candidate = fence_match.group(1).strip()
-        if candidate:
-            return candidate
-
     json_start_candidates = [idx for idx in (trimmed.find("{"), trimmed.find("[")) if idx != -1]
     if json_start_candidates:
         start_idx = min(json_start_candidates)
+        try:
+            _, end = json.JSONDecoder().raw_decode(trimmed[start_idx:])
+            candidate = trimmed[start_idx : start_idx + end].strip()
+            if candidate:
+                return candidate
+        except json.JSONDecodeError:
+            pass
+
         closing_brace = trimmed.rfind("}")
         closing_bracket = trimmed.rfind("]")
         end_idx = max(closing_brace, closing_bracket)
@@ -32,6 +35,12 @@ def unwrap_markdown_json(raw_text: str) -> str:
             candidate = trimmed[start_idx : end_idx + 1].strip()
             if candidate:
                 return candidate
+
+    fence_match = re.search(r"```(?:json|JSON)?\s*(.*?)\s*```", trimmed, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        if candidate:
+            return candidate
 
     return trimmed
 

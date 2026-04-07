@@ -57,6 +57,9 @@ from .foreshadowing import (
 from .chapter_optimization_task import ChapterOptimizationTask
 from .reference_document import ReferenceDocument
 
+# 趋势数据模型
+from .trend import TrendSnapshot, RankingBook, TrendReport
+
 __all__ = [
     # 基础模型
     "AdminSetting",
@@ -105,4 +108,8 @@ __all__ = [
     "FactionRelationshipHistory",
     "KeyLocation",
     "ReferenceDocument",
+    # 趋势数据模型
+    "TrendSnapshot",
+    "RankingBook",
+    "TrendReport",
 ]

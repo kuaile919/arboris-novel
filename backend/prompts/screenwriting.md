@@ -101,14 +101,7 @@
       "description": "string"
     }
   ],
-  "total_chapters": 200,
-  "chapter_outline": [
-    {
-      "chapter_number": 1,
-      "title": "string",
-      "summary": "string"
-    }
-  ]
+  "total_chapters": 200
 }
 ```
 

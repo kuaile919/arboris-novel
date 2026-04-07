@@ -39,6 +39,17 @@
           </button>
           <button
             v-if="!isAdmin"
+            class="md-btn md-btn-tonal md-ripple"
+            @click="openBlueprintSettingChat"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+            </svg>
+            <span class="hidden sm:inline">补设定</span>
+            <span class="sm:hidden">设定</span>
+          </button>
+          <button
+            v-if="!isAdmin"
             class="md-btn md-btn-filled md-ripple"
             @click="goToWritingDesk"
           >
@@ -173,6 +184,14 @@
       @save="handleSave"
     />
 
+    <WDBlueprintSettingChatModal
+      v-if="!isAdmin"
+      :show="showBlueprintSettingChatModal"
+      :project-id="projectId"
+      @close="showBlueprintSettingChatModal = false"
+      @applied="onBlueprintSettingApplied"
+    />
+
     <!-- Material 3 Add Chapter Modal -->
     <transition
       enter-active-class="md-scale-enter-active"
@@ -252,6 +271,8 @@ import ChaptersSection from '@/components/novel-detail/ChaptersSection.vue'
 import EmotionCurveSection from '@/components/novel-detail/EmotionCurveSection.vue'
 import ForeshadowingSection from '@/components/novel-detail/ForeshadowingSection.vue'
 import ReferenceLibrarySection from '@/components/novel-detail/ReferenceLibrarySection.vue'
+import WDBlueprintSettingChatModal from '@/components/writing-desk/WDBlueprintSettingChatModal.vue'
+import { globalAlert } from '@/composables/useAlert'
 
 interface Props {
   isAdmin?: boolean
@@ -382,6 +403,7 @@ const isModalOpen = ref(false)
 const modalTitle = ref('')
 const modalContent = ref<any>('')
 const modalField = ref('')
+const showBlueprintSettingChatModal = ref(false)
 
 // Add chapter modal state (user mode only)
 const isAddChapterModalOpen = ref(false)
@@ -488,6 +510,11 @@ const goToWritingDesk = async () => {
   router.push(path)
 }
 
+const openBlueprintSettingChat = () => {
+  if (props.isAdmin) return
+  showBlueprintSettingChatModal.value = true
+}
+
 const currentComponent = computed(() => sectionComponents[activeSection.value])
 const isSectionLoading = computed(() => sectionLoading[activeSection.value])
 const currentError = computed(() => sectionError[activeSection.value])
@@ -584,6 +611,16 @@ const handleSave = async (data: { field: string; content: any }) => {
   } catch (error) {
     console.error('保存变更失败:', error)
   }
+}
+
+const onBlueprintSettingApplied = async (updatedProject: NovelProject) => {
+  if (props.isAdmin) return
+  novelStore.setCurrentProject(updatedProject)
+  await loadSection('overview', true)
+  if (activeSection.value !== 'overview') {
+    await loadSection(activeSection.value, true)
+  }
+  globalAlert.showSuccess('蓝图补设定已更新到当前页面', '同步成功')
 }
 
 const startAddChapter = async () => {

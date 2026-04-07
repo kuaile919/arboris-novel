@@ -98,7 +98,24 @@
         </p>
 
         <!-- Mode Selection Cards -->
-        <div class="grid md:grid-cols-2 gap-6 max-w-2xl mx-auto">
+        <div class="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+          <!-- Trend Insight Card -->
+          <div
+            @click="goToTrends"
+            class="md-card md-card-elevated group p-8 cursor-pointer transition-all duration-300 hover:scale-[1.02]"
+            style="border-radius: var(--md-radius-xl);"
+          >
+            <div class="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center" style="background-color: var(--md-tertiary-container);">
+              <svg class="w-8 h-8" style="color: var(--md-on-tertiary-container);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+            </div>
+            <h2 class="md-title-large mb-2" style="color: var(--md-tertiary);">市场风向</h2>
+            <p class="md-body-medium" style="color: var(--md-on-surface-variant);">
+              分析起点、番茄等平台排行榜，把握创作风向。
+            </p>
+          </div>
+
           <!-- Inspiration Mode Card -->
           <div
             @click="goToInspiration"
@@ -210,6 +227,10 @@ const handleLogout = () => {
 
 const goToInspiration = () => {
   router.push('/inspiration')
+}
+
+const goToTrends = () => {
+  router.push('/trends')
 }
 
 const goToWorkspace = () => {
