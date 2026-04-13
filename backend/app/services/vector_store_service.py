@@ -145,6 +145,7 @@ class VectorStoreService:
         top_k = top_k or settings.vector_top_k_chunks
         if top_k <= 0:
             return []
+        fetch_limit = top_k + 20
 
         blob = self._to_f32_blob(embedding)
         sql = """
@@ -165,7 +166,7 @@ class VectorStoreService:
                 {
                     "project_id": project_id,
                     "query": blob,
-                    "limit": top_k,
+                    "limit": fetch_limit,
                 },
             )
         except Exception as exc:  # pragma: no cover - 查询异常时仅记录
@@ -181,16 +182,19 @@ class VectorStoreService:
 
         items: List[RetrievedChunk] = []
         for row in self._iter_rows(result):
+            metadata = self._parse_metadata(row.get("metadata"))
+            if self._is_reference_document_metadata(metadata):
+                continue
             items.append(
                 RetrievedChunk(
                     content=row.get("content", ""),
                     chapter_number=row.get("chapter_number", 0),
                     chapter_title=row.get("chapter_title"),
                     score=row.get("distance", 0.0),
-                    metadata=self._parse_metadata(row.get("metadata")),
+                    metadata=metadata,
                 )
             )
-        return items
+        return items[:top_k]
 
     async def query_summaries(
         self,
@@ -404,31 +408,6 @@ class VectorStoreService:
         except Exception as exc:  # pragma: no cover - 删除失败时记录日志
             logger.error("删除章节向量失败: project=%s chapters=%s error=%s", project_id, chapter_numbers, exc)
 
-    async def delete_reference_document_chunks(self, *, project_id: str, document_id: int) -> None:
-        """删除指定参考文档对应的向量分块。"""
-        if not self._client:
-            return
-        await self.ensure_schema()
-        try:
-            await self._client.execute(  # type: ignore[union-attr]
-                """
-                DELETE FROM rag_chunks
-                WHERE project_id = :project_id
-                  AND id LIKE :prefix
-                """,
-                {
-                    "project_id": project_id,
-                    "prefix": f"ref:{project_id}:{document_id}:%",
-                },
-            )
-        except Exception as exc:  # pragma: no cover - 删除失败时记录日志
-            logger.error(
-                "删除参考文档向量失败: project=%s document_id=%s error=%s",
-                project_id,
-                document_id,
-                exc,
-            )
-
     @staticmethod
     def _to_f32_blob(embedding: Sequence[float]) -> bytes:
         """将向量浮点列表编码为 libsql 可识别的 float32 二进制。"""
@@ -478,6 +457,9 @@ class VectorStoreService:
         result = await self._client.execute(sql, {"project_id": project_id})  # type: ignore[union-attr]
         scored: List[RetrievedChunk] = []
         for row in self._iter_rows(result):
+            metadata = self._parse_metadata(row.get("metadata"))
+            if self._is_reference_document_metadata(metadata):
+                continue
             stored_embedding = self._from_f32_blob(row.get("embedding"))
             distance = self._cosine_distance(embedding, stored_embedding)
             scored.append(
@@ -486,7 +468,7 @@ class VectorStoreService:
                     chapter_number=row.get("chapter_number", 0),
                     chapter_title=row.get("chapter_title"),
                     score=distance,
-                    metadata=self._parse_metadata(row.get("metadata")),
+                    metadata=metadata,
                 )
             )
         scored.sort(key=lambda item: item.score)
@@ -540,6 +522,10 @@ class VectorStoreService:
             except json.JSONDecodeError:
                 return {}
         return {}
+
+    @staticmethod
+    def _is_reference_document_metadata(metadata: Dict[str, Any]) -> bool:
+        return metadata.get("source_type") == "reference_document"
 
     @staticmethod
     def _iter_rows(result: Any) -> Iterable[Dict[str, Any]]:

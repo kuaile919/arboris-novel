@@ -300,7 +300,7 @@ const sections: Array<{ key: SectionKey; label: string; description: string }> =
   { key: 'chapter_outline', label: '章节大纲', description: props.isAdmin ? '故事章节规划' : '故事结构规划' },
   { key: 'chapters', label: '章节内容', description: props.isAdmin ? '生成章节与正文' : '生成状态与摘要' },
   ...(!props.isAdmin
-    ? [{ key: 'reference_library' as const, label: '参考资料库', description: '上传原著做RAG参考' }]
+    ? [{ key: 'reference_library' as const, label: '参考资料库', description: '连接 IMA 知识库资料' }]
     : []),
   { key: 'emotion_curve', label: '情感曲线', description: '追踪章节情感变化' },
   { key: 'foreshadowing', label: '伏笔管理', description: '故事线索与回收' }

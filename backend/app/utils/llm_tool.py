@@ -68,9 +68,16 @@ class LLMClient:
         if not key:
             raise ValueError("缺少 OPENAI_API_KEY 配置，请在数据库或环境变量中补全。")
 
+        resolved_base_url = (
+            base_url
+            or (str(settings.openai_base_url) if settings.openai_base_url else None)
+            or os.environ.get("OPENAI_API_BASE_URL")
+            or os.environ.get("OPENAI_API_BASE")
+        )
+
         self._client = AsyncOpenAI(
             api_key=key,
-            base_url=base_url or settings.openai_base_url or os.environ.get("OPENAI_API_BASE"),
+            base_url=resolved_base_url,
         )
         self._default_model = settings.openai_model_name or "gpt-4o-mini"
 

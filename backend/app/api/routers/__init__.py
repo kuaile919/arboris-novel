@@ -7,11 +7,11 @@ from . import (
     auth,
     blueprint_setting,
     foreshadowing,
+    ima,
     llm_config,
     novels,
     optimizer,
     projects,
-    reference,
     review,
     trends,
     updates,
@@ -31,6 +31,6 @@ api_router.include_router(analytics.router)
 api_router.include_router(analytics_enhanced.router, prefix='/enhanced')
 api_router.include_router(foreshadowing.router)
 api_router.include_router(projects.router)
+api_router.include_router(ima.router)
 api_router.include_router(review.router)
-api_router.include_router(reference.router)
 api_router.include_router(trends.router)

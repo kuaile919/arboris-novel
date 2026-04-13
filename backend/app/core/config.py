@@ -108,6 +108,59 @@ class Settings(BaseSettings):
         description="智谱 BigModel 模型名称",
     )
 
+    # -------------------- IMA OpenAPI 配置 --------------------
+    ima_base_url: str = Field(
+        default="https://ima.qq.com",
+        env="IMA_BASE_URL",
+        description="IMA OpenAPI Base URL",
+    )
+    ima_openapi_clientid: Optional[str] = Field(
+        default=None,
+        env="IMA_OPENAPI_CLIENTID",
+        description="IMA OpenAPI Client ID",
+    )
+    ima_openapi_apikey: Optional[str] = Field(
+        default=None,
+        env="IMA_OPENAPI_APIKEY",
+        description="IMA OpenAPI API Key",
+    )
+    ima_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=120,
+        env="IMA_TIMEOUT_SECONDS",
+        description="IMA OpenAPI 请求超时时间，单位秒",
+    )
+
+    # -------------------- MiniMax MCP 配置 --------------------
+    minimax_api_key: Optional[str] = Field(
+        default=None,
+        env="MINIMAX_API_KEY",
+        description="MiniMax API Key",
+    )
+    minimax_api_host: str = Field(
+        default="https://api.minimaxi.com",
+        env="MINIMAX_API_HOST",
+        description="MiniMax API Host",
+    )
+    minimax_mcp_command: str = Field(
+        default="uvx",
+        env="MINIMAX_MCP_COMMAND",
+        description="启动 MiniMax MCP Server 的命令",
+    )
+    minimax_mcp_server_package: str = Field(
+        default="minimax-coding-plan-mcp",
+        env="MINIMAX_MCP_SERVER_PACKAGE",
+        description="MiniMax MCP Server 包名",
+    )
+    minimax_mcp_timeout_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=180,
+        env="MINIMAX_MCP_TIMEOUT_SECONDS",
+        description="MiniMax MCP 请求超时时间，单位秒",
+    )
+
     # -------------------- OpenAI 配置（兼容旧版） --------------------
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY", description="默认的 LLM API Key")
     openai_base_url: Optional[HttpUrl] = Field(

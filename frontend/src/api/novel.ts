@@ -7,6 +7,18 @@ import router from '@/router'
 export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http://127.0.0.1:8000'
 export const API_PREFIX = '/api'
 
+export class APIError extends Error {
+  status: number
+  data: any
+
+  constructor(message: string, status: number, data: any = null) {
+    super(message)
+    this.name = 'APIError'
+    this.status = status
+    this.data = data
+  }
+}
+
 // 统一的请求处理函数
 const request = async (url: string, options: RequestInit = {}) => {
   const authStore = useAuthStore()
@@ -35,7 +47,7 @@ const request = async (url: string, options: RequestInit = {}) => {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+    throw new APIError(errorData.detail || `请求失败，状态码: ${response.status}`, response.status, errorData)
   }
 
   if (response.status === 204) {
@@ -233,23 +245,89 @@ export interface SyncWorldSettingResult {
   added_count: number
 }
 
-export interface ReferenceDocumentItem {
-  id: number
-  project_id: string
-  filename: string
-  title: string
-  file_type: string
-  file_size: number
-  char_count: number
-  chunk_count: number
-  status: string
-  error_message?: string | null
-  created_at: string
+export interface IMAKnowledgeBase {
+  id: string
+  name: string
+  cover_url?: string | null
+  description?: string | null
+  recommended_questions: string[]
+  member_count?: number | null
+  content_count?: number | null
+  creator?: string | null
+  role_type?: string | null
 }
 
-export interface ReferenceUploadResponse {
-  document: ReferenceDocumentItem
+export interface IMAKnowledgeBaseCollectionResponse {
+  items: IMAKnowledgeBase[]
+  next_cursor: string
+  is_end: boolean
+}
+
+export interface IMAKnowledgePathEntry {
+  id: string
+  name: string
+  is_root: boolean
+}
+
+export interface IMAKnowledgeItem {
+  id: string
+  title: string
+  is_folder: boolean
+  media_type: number
+  parent_folder_id?: string | null
+  tags: string[]
+  highlight_content?: string | null
+}
+
+export interface IMAKnowledgeBaseDetailResponse {
+  knowledge_base: IMAKnowledgeBase
+}
+
+export interface IMAKnowledgeItemListResponse {
+  items: IMAKnowledgeItem[]
+  current_path: IMAKnowledgePathEntry[]
+  next_cursor: string
+  is_end: boolean
+}
+
+export interface IMASearchResponse {
+  items: IMAKnowledgeItem[]
+  next_cursor: string
+  is_end: boolean
+  fallback_used: boolean
+  fallback_provider?: string | null
+  fallback_message?: string | null
+  fallback_results: IMAFallbackSearchResult[]
+}
+
+export interface IMAFallbackSearchResult {
+  title: string
+  link: string
+  snippet?: string | null
+  date?: string | null
+}
+
+export interface IMAFileUploadResponse {
   message: string
+  knowledge_base: IMAKnowledgeBase
+  item: IMAKnowledgeItem
+  duplicate_handling: 'original' | 'renamed'
+  original_name: string
+  final_name: string
+}
+
+export interface IMAUrlImportResult {
+  url: string
+  success: boolean
+  media_id?: string | null
+  error?: string | null
+}
+
+export interface IMAUrlImportResponse {
+  message: string
+  success_count: number
+  failure_count: number
+  results: IMAUrlImportResult[]
 }
 
 // 内容型Section（对应后端NovelSectionType枚举）
@@ -268,6 +346,7 @@ export interface NovelSectionResponse {
 
 // API 函数
 const NOVELS_BASE = `${API_BASE_URL}${API_PREFIX}/novels`
+const PROJECTS_BASE = `${API_BASE_URL}${API_PREFIX}/projects`
 const WRITER_PREFIX = '/api/writer'
 const WRITER_BASE = `${API_BASE_URL}${WRITER_PREFIX}/novels`
 
@@ -501,20 +580,20 @@ export class NovelAPI {
    * 同步世界设定（从章节大纲和摘要中提取地点和阵营）
    */
   static async syncWorldSetting(projectId: string): Promise<SyncWorldSettingResult> {
-    return request(`${API_BASE_URL}/api/projects/${projectId}/world-setting/sync`, {
+    return request(`${PROJECTS_BASE}/${projectId}/world-setting/sync`, {
       method: 'POST'
     })
   }
 
   static async replaceKeyLocations(projectId: string, items: any[]): Promise<any> {
-    return request(`${API_BASE_URL}/api/projects/${projectId}/key-locations/replace-all`, {
+    return request(`${PROJECTS_BASE}/${projectId}/key-locations/replace-all`, {
       method: 'PUT',
       body: JSON.stringify(items)
     })
   }
 
   static async replaceFactions(projectId: string, items: any[]): Promise<any> {
-    return request(`${API_BASE_URL}/api/projects/${projectId}/factions/replace-all`, {
+    return request(`${PROJECTS_BASE}/${projectId}/factions/replace-all`, {
       method: 'PUT',
       body: JSON.stringify(items)
     })
@@ -534,28 +613,124 @@ export class NovelAPI {
     })
   }
 
-  static async listReferenceDocuments(projectId: string): Promise<ReferenceDocumentItem[]> {
-    return request(`${API_BASE_URL}/api/references/projects/${projectId}/documents`, {
+  static async getIMAAddableKnowledgeBases(
+    projectId: string,
+    cursor = '',
+    limit = 20
+  ): Promise<IMAKnowledgeBaseCollectionResponse> {
+    const params = new URLSearchParams({
+      cursor,
+      limit: String(limit)
+    })
+    return request(`${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/addable?${params.toString()}`, {
       method: 'GET'
     })
   }
 
-  static async uploadReferenceDocument(
+  static async searchIMAKnowledgeBases(
     projectId: string,
-    file: File
-  ): Promise<ReferenceUploadResponse> {
-    const formData = new FormData()
-    formData.append('file', file)
-    return request(`${API_BASE_URL}/api/references/projects/${projectId}/documents/upload`, {
-      method: 'POST',
-      body: formData
+    query: string,
+    cursor = '',
+    limit = 20
+  ): Promise<IMAKnowledgeBaseCollectionResponse> {
+    const params = new URLSearchParams({
+      query,
+      cursor,
+      limit: String(limit)
+    })
+    return request(`${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/search?${params.toString()}`, {
+      method: 'GET'
     })
   }
 
-  static async deleteReferenceDocument(projectId: string, documentId: number): Promise<void> {
-    await request(`${API_BASE_URL}/api/references/projects/${projectId}/documents/${documentId}`, {
-      method: 'DELETE'
+  static async getIMAKnowledgeBase(
+    projectId: string,
+    knowledgeBaseId: string
+  ): Promise<IMAKnowledgeBaseDetailResponse> {
+    return request(`${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+      method: 'GET'
     })
+  }
+
+  static async listIMAKnowledgeItems(
+    projectId: string,
+    knowledgeBaseId: string,
+    options: { cursor?: string; limit?: number; folderId?: string | null } = {}
+  ): Promise<IMAKnowledgeItemListResponse> {
+    const params = new URLSearchParams({
+      cursor: options.cursor || '',
+      limit: String(options.limit || 20)
+    })
+    if (options.folderId) {
+      params.set('folder_id', options.folderId)
+    }
+    return request(
+      `${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/items?${params.toString()}`,
+      {
+        method: 'GET'
+      }
+    )
+  }
+
+  static async searchIMAKnowledgeItems(
+    projectId: string,
+    knowledgeBaseId: string,
+    query: string,
+    cursor = ''
+  ): Promise<IMASearchResponse> {
+    const params = new URLSearchParams({
+      query,
+      cursor
+    })
+    return request(
+      `${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/search?${params.toString()}`,
+      {
+        method: 'GET'
+      }
+    )
+  }
+
+  static async uploadIMAKnowledgeFile(
+    projectId: string,
+    knowledgeBaseId: string,
+    file: File,
+    options: { folderId?: string | null; onDuplicate?: 'error' | 'rename' } = {}
+  ): Promise<IMAFileUploadResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (options.folderId) {
+      formData.append('folder_id', options.folderId)
+    }
+    formData.append('on_duplicate', options.onDuplicate || 'error')
+    return request(
+      `${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/upload`,
+      {
+        method: 'POST',
+        body: formData
+      }
+    )
+  }
+
+  static async importIMAUrls(
+    projectId: string,
+    knowledgeBaseId: string,
+    urls: string[],
+    folderId?: string | null
+  ): Promise<IMAUrlImportResponse> {
+    return request(
+      `${PROJECTS_BASE}/${projectId}/ima/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/urls/import`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          urls,
+          folder_id: folderId || null
+        })
+      }
+    )
+  }
+
+  static isAPIError(error: unknown): error is APIError {
+    return error instanceof APIError
   }
 }
 
