@@ -155,23 +155,104 @@ class LLMService:
         top_p: Optional[float] = None,
     ) -> str:
         config = await self._resolve_llm_config(user_id)
+        attempt_configs = self._build_llm_attempt_chain(config)
+        chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
+        last_error: Optional[HTTPException] = None
+
+        for attempt_index, attempt_config in enumerate(attempt_configs, start=1):
+            try:
+                full_response, finish_reason = await self._stream_once(
+                    config=attempt_config,
+                    chat_messages=chat_messages,
+                    temperature=temperature,
+                    timeout=timeout,
+                    response_format=response_format,
+                    max_tokens=max_tokens,
+                    top_p=top_p,
+                    user_id=user_id,
+                    attempt_index=attempt_index,
+                    total_attempts=len(attempt_configs),
+                )
+                logger.debug(
+                    "LLM response collected: provider=%s model=%s user_id=%s finish_reason=%s preview=%s",
+                    attempt_config.get("provider"),
+                    attempt_config.get("model"),
+                    user_id,
+                    finish_reason,
+                    full_response[:500],
+                )
+
+                if finish_reason == "length" or finish_reason == "max_tokens":
+                    logger.warning(
+                        "LLM response truncated by token limit: provider=%s model=%s user_id=%s response_length=%d — returning partial content",
+                        attempt_config.get("provider"),
+                        attempt_config.get("model"),
+                        user_id,
+                        len(full_response),
+                    )
+
+                await self.usage_service.increment("api_request_count")
+                logger.info(
+                    "LLM response success: provider=%s model=%s user_id=%s chars=%d attempt=%d/%d",
+                    attempt_config.get("provider"),
+                    attempt_config.get("model"),
+                    user_id,
+                    len(full_response),
+                    attempt_index,
+                    len(attempt_configs),
+                )
+                return full_response
+            except HTTPException as exc:
+                last_error = exc
+                if exc.status_code == 503 and attempt_index < len(attempt_configs):
+                    logger.warning(
+                        "LLM attempt failed, switching to fallback: attempt=%d/%d provider=%s model=%s base_url=%s detail=%s",
+                        attempt_index,
+                        len(attempt_configs),
+                        attempt_config.get("provider"),
+                        attempt_config.get("model"),
+                        attempt_config.get("base_url"),
+                        exc.detail,
+                    )
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        raise HTTPException(status_code=500, detail="未找到可用的 LLM 配置")
+
+    async def _stream_once(
+        self,
+        *,
+        config: Dict[str, Optional[str]],
+        chat_messages: List[ChatMessage],
+        temperature: float,
+        timeout: float,
+        response_format: Optional[str],
+        max_tokens: Optional[int],
+        top_p: Optional[float],
+        user_id: Optional[int],
+        attempt_index: int,
+        total_attempts: int,
+    ) -> tuple[str, Optional[str]]:
         client = LLMClient(
             api_key=config["api_key"],
             base_url=config.get("base_url"),
             provider=config.get("provider"),
         )
 
-        chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
-
         full_response = ""
         finish_reason = None
 
         logger.info(
-            "Streaming LLM response: provider=%s model=%s user_id=%s messages=%d",
+            "Streaming LLM response: attempt=%d/%d provider=%s model=%s user_id=%s messages=%d base_url=%s",
+            attempt_index,
+            total_attempts,
             config.get("provider"),
             config.get("model"),
             user_id,
-            len(messages),
+            len(chat_messages),
+            config.get("base_url"),
         )
 
         try:
@@ -201,23 +282,9 @@ class LLMService:
             else:
                 detail = str(exc) or detail
             logger.error(
-                "LLM stream internal error: provider=%s model=%s user_id=%s detail=%s",
-                config.get("provider"),
-                config.get("model"),
-                user_id,
-                detail,
-                exc_info=exc,
-            )
-            raise HTTPException(status_code=503, detail=detail)
-        except (httpx.RemoteProtocolError, httpx.ReadTimeout, APIConnectionError, APITimeoutError) as exc:
-            if isinstance(exc, httpx.RemoteProtocolError):
-                detail = "AI 服务连接被意外中断，请稍后重试"
-            elif isinstance(exc, (httpx.ReadTimeout, APITimeoutError)):
-                detail = "AI 服务响应超时，请稍后重试"
-            else:
-                detail = "无法连接到 AI 服务，请稍后重试"
-            logger.error(
-                "LLM stream failed: provider=%s model=%s user_id=%s detail=%s",
+                "LLM stream internal error: attempt=%d/%d provider=%s model=%s user_id=%s detail=%s",
+                attempt_index,
+                total_attempts,
                 config.get("provider"),
                 config.get("model"),
                 user_id,
@@ -225,12 +292,33 @@ class LLMService:
                 exc_info=exc,
             )
             raise HTTPException(status_code=503, detail=detail) from exc
+        except (httpx.TransportError, httpx.TimeoutException, APIConnectionError, APITimeoutError) as exc:
+            if isinstance(exc, httpx.RemoteProtocolError):
+                detail = "AI 服务连接被意外中断，请稍后重试"
+            elif isinstance(exc, (httpx.TimeoutException, APITimeoutError)):
+                detail = "AI 服务响应超时，请稍后重试"
+            else:
+                detail = "无法连接到 AI 服务，请稍后重试"
+            logger.error(
+                "LLM stream failed: attempt=%d/%d provider=%s model=%s user_id=%s detail=%s",
+                attempt_index,
+                total_attempts,
+                config.get("provider"),
+                config.get("model"),
+                user_id,
+                detail,
+                exc_info=exc,
+            )
+            raise HTTPException(status_code=503, detail=detail) from exc
+        except HTTPException:
+            raise
         except Exception as exc:
-            # 处理 Anthropic 特定错误
             error_type = type(exc).__name__
             error_msg = str(exc)
             logger.error(
-                "LLM stream failed: provider=%s model=%s user_id=%s error_type=%s error=%s",
+                "LLM stream failed: attempt=%d/%d provider=%s model=%s user_id=%s error_type=%s error=%s",
+                attempt_index,
+                total_attempts,
                 config.get("provider"),
                 config.get("model"),
                 user_id,
@@ -239,31 +327,14 @@ class LLMService:
                 exc_info=exc,
             )
             if "api_key" in error_msg.lower() or "authentication" in error_msg.lower():
-                raise HTTPException(status_code=401, detail="API Key 无效或未配置")
-            raise HTTPException(status_code=503, detail=f"AI 服务错误: {error_msg}")
-
-        logger.debug(
-            "LLM response collected: provider=%s model=%s user_id=%s finish_reason=%s preview=%s",
-            config.get("provider"),
-            config.get("model"),
-            user_id,
-            finish_reason,
-            full_response[:500],
-        )
-
-        if finish_reason == "length" or finish_reason == "max_tokens":
-            logger.warning(
-                "LLM response truncated by token limit: provider=%s model=%s user_id=%s response_length=%d — returning partial content",
-                config.get("provider"),
-                config.get("model"),
-                user_id,
-                len(full_response),
-            )
-            # Return partial content rather than raising — callers can use what was generated
+                raise HTTPException(status_code=401, detail="API Key 无效或未配置") from exc
+            raise HTTPException(status_code=503, detail=f"AI 服务错误: {error_msg}") from exc
 
         if not full_response:
             logger.error(
-                "LLM returned empty response: provider=%s model=%s user_id=%s finish_reason=%s",
+                "LLM returned empty response: attempt=%d/%d provider=%s model=%s user_id=%s finish_reason=%s",
+                attempt_index,
+                total_attempts,
                 config.get("provider"),
                 config.get("model"),
                 user_id,
@@ -274,15 +345,59 @@ class LLMService:
                 detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员"
             )
 
-        await self.usage_service.increment("api_request_count")
-        logger.info(
-            "LLM response success: provider=%s model=%s user_id=%s chars=%d",
-            config.get("provider"),
-            config.get("model"),
-            user_id,
-            len(full_response),
+        return full_response, finish_reason
+
+    def _build_llm_attempt_chain(self, primary_config: Dict[str, Optional[str]]) -> List[Dict[str, Optional[str]]]:
+        attempts: List[Dict[str, Optional[str]]] = []
+        seen: set[tuple[Optional[str], Optional[str], Optional[str], Optional[str]]] = set()
+
+        self._append_attempt_config(attempts, seen, primary_config)
+
+        if primary_config.get("source") != "system" or primary_config.get("provider") != "openai":
+            return attempts
+
+        fallback_specs = [
+            (settings.openai_fallback_api_key_1, settings.openai_fallback_base_url_1),
+            (settings.openai_fallback_api_key_2, settings.openai_fallback_base_url_2),
+            (settings.openai_fallback_api_key_3, settings.openai_fallback_base_url_3),
+        ]
+        for index, (api_key, base_url) in enumerate(fallback_specs, start=1):
+            if not api_key or not base_url:
+                continue
+            self._append_attempt_config(
+                attempts,
+                seen,
+                {
+                    "api_key": api_key,
+                    "base_url": str(base_url).rstrip("/"),
+                    "model": primary_config.get("model"),
+                    "provider": "openai",
+                    "source": f"system-fallback-{index}",
+                },
+            )
+
+        return attempts
+
+    def _append_attempt_config(
+        self,
+        attempts: List[Dict[str, Optional[str]]],
+        seen: set[tuple[Optional[str], Optional[str], Optional[str], Optional[str]]],
+        config: Dict[str, Optional[str]],
+    ) -> None:
+        normalized = {
+            **config,
+            "base_url": config.get("base_url").rstrip("/") if config.get("base_url") else None,
+        }
+        signature = (
+            normalized.get("provider"),
+            normalized.get("api_key"),
+            normalized.get("base_url"),
+            normalized.get("model"),
         )
-        return full_response
+        if signature in seen:
+            return
+        seen.add(signature)
+        attempts.append(normalized)
 
     async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
         logger.debug("[llm-config] resolve called, user_id=%s", user_id)
@@ -297,6 +412,7 @@ class LLMService:
                     "base_url": config.llm_provider_url,
                     "model": config.llm_provider_model,
                     "provider": getattr(config, "llm_provider", settings.llm_provider),
+                    "source": "user",
                 }
 
         # 检查每日使用次数限制
@@ -324,9 +440,14 @@ class LLMService:
             logger.debug("[llm-config] final zhipu config: api_key=%s, base_url=%s, model=%s",
                 api_key[:20] + "..." if api_key else None, base_url, model)
         else:
-            api_key = await self._get_config_value("openai_api_key") or settings.openai_api_key
-            base_url = await self._get_config_value("openai_base_url") or str(settings.openai_base_url) if settings.openai_base_url else None
-            model = await self._get_config_value("openai_model_name") or settings.openai_model_name
+            db_openai_api_key = await self._get_config_value("openai_api_key")
+            db_openai_base_url = await self._get_config_value("openai_base_url")
+            db_openai_model = await self._get_config_value("openai_model_name")
+            api_key = db_openai_api_key or settings.openai_api_key
+            base_url = db_openai_base_url or (
+                str(settings.openai_base_url).rstrip("/") if settings.openai_base_url else None
+            )
+            model = db_openai_model or settings.openai_model_name
 
         if not api_key:
             logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
@@ -335,7 +456,13 @@ class LLMService:
                 detail=f"未配置默认 {provider.upper()} API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
             )
 
-        return {"api_key": api_key, "base_url": base_url, "model": model, "provider": provider}
+        return {
+            "api_key": api_key,
+            "base_url": base_url,
+            "model": model,
+            "provider": provider,
+            "source": "system",
+        }
 
     async def get_embedding(
         self,

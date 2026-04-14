@@ -170,6 +170,42 @@ class Settings(BaseSettings):
         description="LLM API Base URL",
     )
     openai_model_name: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL_NAME", description="默认 LLM 模型名称")
+    openai_fallback_api_key_1: Optional[str] = Field(
+        default=None,
+        env="OPENAI_FALLBACK_1_API_KEY",
+        validation_alias=AliasChoices("OPENAI_FALLBACK_1_API_KEY"),
+        description="默认 LLM 备用 API Key #1",
+    )
+    openai_fallback_base_url_1: Optional[HttpUrl] = Field(
+        default=None,
+        env="OPENAI_FALLBACK_1_BASE_URL",
+        validation_alias=AliasChoices("OPENAI_FALLBACK_1_BASE_URL"),
+        description="默认 LLM 备用 Base URL #1",
+    )
+    openai_fallback_api_key_2: Optional[str] = Field(
+        default=None,
+        env="OPENAI_FALLBACK_2_API_KEY",
+        validation_alias=AliasChoices("OPENAI_FALLBACK_2_API_KEY"),
+        description="默认 LLM 备用 API Key #2",
+    )
+    openai_fallback_base_url_2: Optional[HttpUrl] = Field(
+        default=None,
+        env="OPENAI_FALLBACK_2_BASE_URL",
+        validation_alias=AliasChoices("OPENAI_FALLBACK_2_BASE_URL"),
+        description="默认 LLM 备用 Base URL #2",
+    )
+    openai_fallback_api_key_3: Optional[str] = Field(
+        default=None,
+        env="OPENAI_FALLBACK_3_API_KEY",
+        validation_alias=AliasChoices("OPENAI_FALLBACK_3_API_KEY"),
+        description="默认 LLM 备用 API Key #3",
+    )
+    openai_fallback_base_url_3: Optional[HttpUrl] = Field(
+        default=None,
+        env="OPENAI_FALLBACK_3_BASE_URL",
+        validation_alias=AliasChoices("OPENAI_FALLBACK_3_BASE_URL"),
+        description="默认 LLM 备用 Base URL #3",
+    )
 
     # -------------------- Writer 配置 --------------------
     writer_chapter_versions: int = Field(
@@ -339,6 +375,10 @@ class Settings(BaseSettings):
         return candidate
 
     @validator(
+        "openai_base_url",
+        "openai_fallback_base_url_1",
+        "openai_fallback_base_url_2",
+        "openai_fallback_base_url_3",
         "embedding_base_url",
         "ollama_embedding_base_url",
         "vector_db_url",
