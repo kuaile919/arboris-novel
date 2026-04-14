@@ -1,4 +1,6 @@
 fastapi==0.110.0
+# FastAPI 0.110.0 requires Starlette < 0.37.0; Starlette 1.x breaks APIRouter init.
+starlette==0.36.3
 uvicorn[standard]==0.29.0
 sqlalchemy==2.0.44
 aiomysql==0.3.2
