@@ -91,6 +91,26 @@
             :loading="novelStore.isLoading"
             @submit="handleUserInput"
           />
+          <div
+            v-if="showFallbackActions"
+            class="mt-3 flex flex-wrap items-center gap-2"
+          >
+            <button
+              @click="handleContinueInput"
+              :disabled="novelStore.isLoading"
+              class="px-4 py-2 rounded-full border border-gray-300 bg-white text-gray-700 text-sm hover:bg-gray-100 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              继续输入
+            </button>
+            <button
+              @click="handleForceGenerateBlueprint"
+              :disabled="novelStore.isLoading"
+              class="px-4 py-2 rounded-full bg-indigo-500 text-white text-sm hover:bg-indigo-600 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              生成蓝图
+            </button>
+            <span class="text-xs text-gray-500">当前对话已进入收束状态，你可以继续补充或直接生成蓝图。</span>
+          </div>
         </div>
       </div>
 
@@ -115,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import type { UIControl, Blueprint } from '@/api/novel'
@@ -141,11 +161,42 @@ const showBlueprintConfirmation = ref(false)
 const showBlueprint = ref(false)
 const chatMessages = ref<ChatMessage[]>([])
 const currentUIControl = ref<UIControl | null>(null)
+const shouldEnableFallbackActions = ref(false)
 const currentTurn = ref(0)
 const completedBlueprint = ref<Blueprint | null>(null)
 const confirmationMessage = ref('')
 const blueprintMessage = ref('')
 const chatArea = ref<HTMLElement>()
+const showFallbackActions = computed(() => shouldEnableFallbackActions.value && !showBlueprint.value && !showBlueprintConfirmation.value)
+
+const buildFallbackTextControl = (forEndedState = false): UIControl => ({
+  type: 'text_input',
+  options: [],
+  placeholder: forEndedState
+    ? '请输入你想继续补充的设定，或点击“生成蓝图”'
+    : '当前对话选项缺失，请直接输入你的想法'
+})
+
+const isSessionClosed = (conversationState: any) => {
+  const stage = String(conversationState?.stage || '').toLowerCase()
+  const status = String(conversationState?.status || '').toLowerCase()
+  return stage === 'ended' || status === 'session_closed' || status === 'closed'
+}
+
+const isInteractiveUIControl = (control: UIControl | null | undefined) => {
+  if (!control) return false
+  if (control.type === 'text_input' || control.type === 'single_choice') return true
+  return Array.isArray(control.options) && control.options.length > 0
+}
+
+const applyConversationControl = (payload: { ui_control?: UIControl | null; conversation_state?: any }) => {
+  const sessionClosed = isSessionClosed(payload.conversation_state)
+  const hasInteractiveControl = isInteractiveUIControl(payload.ui_control)
+  shouldEnableFallbackActions.value = sessionClosed || !hasInteractiveControl
+  currentUIControl.value = hasInteractiveControl
+    ? payload.ui_control || null
+    : buildFallbackTextControl(sessionClosed)
+}
 
 const goBack = () => {
   router.push('/')
@@ -159,6 +210,7 @@ const resetInspirationMode = () => {
   showBlueprint.value = false
   chatMessages.value = []
   currentUIControl.value = null
+  shouldEnableFallbackActions.value = false
   currentTurn.value = 0
   completedBlueprint.value = null
   confirmationMessage.value = ''
@@ -237,11 +289,13 @@ const restoreConversation = async (projectId: string) => {
         
         if (lastAssistantMsg.is_complete) {
           // 如果对话已完成，直接显示蓝图确认界面
+          shouldEnableFallbackActions.value = false
+          currentUIControl.value = null
           confirmationMessage.value = lastAssistantMsg.ai_message
           showBlueprintConfirmation.value = true
         } else {
           // 否则，恢复对话
-          currentUIControl.value = lastAssistantMsg.ui_control
+          applyConversationControl(lastAssistantMsg)
         }
       }
       // 计算当前轮次
@@ -284,14 +338,18 @@ const handleUserInput = async (userInput: any) => {
 
     if (response.is_complete && response.ready_for_blueprint) {
       // 对话完成，显示蓝图确认界面
+      shouldEnableFallbackActions.value = false
+      currentUIControl.value = null
       confirmationMessage.value = response.ai_message
       showBlueprintConfirmation.value = true
     } else if (response.is_complete) {
       // 向后兼容：直接生成蓝图（如果后端还没更新）
+      shouldEnableFallbackActions.value = false
+      currentUIControl.value = null
       await handleGenerateBlueprint()
     } else {
       // 继续对话
-      currentUIControl.value = response.ui_control
+      applyConversationControl(response)
     }
   } catch (error) {
     console.error('对话失败:', error)
@@ -303,6 +361,14 @@ const handleUserInput = async (userInput: any) => {
     // 停止加载并返回初始界面
     resetInspirationMode()
   }
+}
+
+const handleContinueInput = () => {
+  currentUIControl.value = buildFallbackTextControl(true)
+}
+
+const handleForceGenerateBlueprint = async () => {
+  await handleGenerateBlueprint()
 }
 
 const handleGenerateBlueprint = async () => {

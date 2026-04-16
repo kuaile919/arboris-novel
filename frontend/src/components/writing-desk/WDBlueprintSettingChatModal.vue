@@ -12,7 +12,7 @@
         enter-from-class="opacity-0 scale-95"
         leave-to-class="opacity-0 scale-95"
       >
-        <div class="md-dialog w-full max-w-6xl mx-4 h-[88vh] max-h-[960px] flex flex-col overflow-hidden">
+        <div class="md-dialog blueprint-setting-dialog w-full mx-4 flex flex-col overflow-hidden">
           <div class="p-4 border-b border-gray-200 bg-white">
             <div class="flex justify-between items-center gap-4">
               <div class="flex items-center gap-2">
@@ -367,3 +367,52 @@ watch(
   }
 )
 </script>
+
+<style scoped>
+:deep(.blueprint-setting-dialog) {
+  width: min(94vw, 1360px) !important;
+  max-width: min(94vw, 1360px) !important;
+  height: min(92vh, 1080px);
+  max-height: 92vh !important;
+}
+
+:deep(.chat-bubble-ai) {
+  max-width: min(860px, calc(100% - 28px)) !important;
+  padding: 16px 18px !important;
+}
+
+:deep(.chat-bubble-ai .prose) {
+  font-size: 15px;
+  line-height: 1.9;
+  letter-spacing: 0.01em;
+}
+
+:deep(.chat-bubble-ai .prose p) {
+  margin-top: 0.55em;
+  margin-bottom: 0.55em;
+}
+
+:deep(.chat-bubble-ai .prose li) {
+  margin-top: 0.35em;
+  margin-bottom: 0.35em;
+}
+
+@media (max-width: 768px) {
+  :deep(.blueprint-setting-dialog) {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    height: 94vh;
+    max-height: 94vh !important;
+  }
+
+  :deep(.chat-bubble-ai) {
+    max-width: calc(100% - 12px) !important;
+    padding: 14px 14px !important;
+  }
+
+  :deep(.chat-bubble-ai .prose) {
+    font-size: 14px;
+    line-height: 1.8;
+  }
+}
+</style>
