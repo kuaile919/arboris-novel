@@ -4,7 +4,11 @@
     <div :class="bubbleClass">
       <!-- AI 消息支持 markdown 渲染 -->
       <div 
-        v-if="type === 'ai'" 
+        v-if="type === 'ai' && shouldRenderAsPlainText"
+        class="max-w-none whitespace-pre-wrap break-words text-[15px] leading-[1.9]"
+      >{{ normalizedAiMessage }}</div>
+      <div
+        v-else-if="type === 'ai'" 
         class="prose prose-sm max-w-none prose-headings:mt-2 prose-headings:mb-1 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0"
         v-html="renderedMessage"
       ></div>
@@ -24,16 +28,29 @@ interface Props {
 
 const props = defineProps<Props>()
 
+const decodeEscapedText = (text: string): string => {
+  if (!text) return ''
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, '\\')
+}
+
+const escapeHtml = (text: string): string => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 // 简单的 markdown 解析函数
 const parseMarkdown = (text: string): string => {
   if (!text) return ''
-  
-  // 处理转义字符
-  let parsed = text
-    .replace(/\\n/g, '\n')
-    .replace(/\\\"/g, '"')
-    .replace(/\\'/g, "'")
-    .replace(/\\\\/g, '\\')
+
+  let parsed = escapeHtml(decodeEscapedText(text))
   
   // 处理加粗文本 **text**
   parsed = parsed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -58,9 +75,57 @@ const parseMarkdown = (text: string): string => {
   return parsed
 }
 
+const decodedMessage = computed(() => decodeEscapedText(props.message))
+
+const extractJsonLikeAiMessage = (text: string): string | null => {
+  const normalized = text.trim()
+  if (!normalized) return null
+
+  try {
+    const parsed = JSON.parse(normalized) as Record<string, unknown>
+    const candidate = parsed?.ai_message ?? parsed?.message ?? parsed?.content
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim()
+    }
+  } catch {
+    // ignore malformed json and continue with tolerant extraction
+  }
+
+  const patterns = [
+    /"ai_message"\s*:\s*"([\s\S]*?)"\s*,\s*"proposed_patch"/,
+    /"ai_message"\s*:\s*"([\s\S]*?)"\s*,\s*"need_confirm"/,
+    /"message"\s*:\s*"([\s\S]*?)"\s*,\s*"proposed_patch"/,
+  ]
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern)
+    const candidate = match?.[1]?.trim()
+    if (candidate) {
+      return candidate
+    }
+  }
+  return null
+}
+
+const normalizedAiMessage = computed(() => {
+  if (props.type !== 'ai') return decodedMessage.value
+  const extracted = extractJsonLikeAiMessage(decodedMessage.value)
+  return extracted ?? decodedMessage.value
+})
+
+const shouldRenderAsPlainText = computed(() => {
+  if (props.type !== 'ai') return false
+  const text = normalizedAiMessage.value.trim()
+  if (!text) return false
+  if (text.startsWith('{') || text.startsWith('[')) return true
+
+  const jsonLikeKeys = text.match(/\"[a-zA-Z0-9_\u4e00-\u9fa5]+\"\s*:/g)
+  return Boolean(jsonLikeKeys && jsonLikeKeys.length >= 2)
+})
+
 const renderedMessage = computed(() => {
   if (props.type === 'ai') {
-    return parseMarkdown(props.message)
+    return parseMarkdown(normalizedAiMessage.value)
   }
   return props.message
 })

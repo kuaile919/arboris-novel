@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -69,6 +70,9 @@ def _normalize_blueprint_setting_patch(raw_patch: Any) -> BlueprintPatch | None:
 def _extract_concept_ai_message(content: str) -> str:
     if not content:
         return ""
+    extracted = _extract_json_like_ai_message(content)
+    if extracted:
+        return extracted
     normalized = unwrap_markdown_json(content)
     try:
         parsed = json.loads(normalized)
@@ -79,6 +83,38 @@ def _extract_concept_ai_message(content: str) -> str:
     except (json.JSONDecodeError, TypeError):
         pass
     return content
+
+
+def _extract_json_like_ai_message(content: str) -> str | None:
+    if not content:
+        return None
+
+    normalized = unwrap_markdown_json(content).strip()
+    if not normalized:
+        return None
+
+    try:
+        parsed = json.loads(normalized)
+        if isinstance(parsed, dict):
+            for key in ("ai_message", "message", "content"):
+                value = parsed.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    patterns = (
+        r'"ai_message"\s*:\s*"([\s\S]*?)"\s*,\s*"proposed_patch"',
+        r'"ai_message"\s*:\s*"([\s\S]*?)"\s*,\s*"need_confirm"',
+        r'"message"\s*:\s*"([\s\S]*?)"\s*,\s*"proposed_patch"',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                return value
+    return None
 
 
 def _build_blueprint_setting_context(project_schema: NovelProjectSchema) -> str:
@@ -220,6 +256,10 @@ def _serialize_blueprint_setting_message(record: Any) -> BlueprintSettingChatMes
                 source = payload.get("source") or source
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
+
+        extracted_message = _extract_json_like_ai_message(str(message))
+        if extracted_message:
+            message = extracted_message
 
         return BlueprintSettingChatMessage(
             id=record.id,
@@ -373,9 +413,14 @@ async def converse_with_blueprint_setting(
         sanitized = sanitize_json_like_text(normalized)
         parsed = json.loads(sanitized)
     except (json.JSONDecodeError, TypeError, ValueError):
-        parsed = {"ai_message": llm_response}
+        fallback_message = _extract_json_like_ai_message(llm_response) or llm_response
+        parsed = {"ai_message": fallback_message}
 
-    ai_message = parsed.get("ai_message") or parsed.get("message") or "我先把这条补充设定记下来了，我们可以继续细化。"
+    ai_message_raw = parsed.get("ai_message") or parsed.get("message")
+    if isinstance(ai_message_raw, str) and ai_message_raw.strip():
+        ai_message = _extract_json_like_ai_message(ai_message_raw) or ai_message_raw
+    else:
+        ai_message = "我先把这条补充设定记下来了，我们可以继续细化。"
     proposed_patch = _normalize_blueprint_setting_patch(parsed.get("proposed_patch"))
     impact_analysis = _analyze_blueprint_patch_impact(project_schema, proposed_patch)
     need_confirm = bool(parsed.get("need_confirm", bool(proposed_patch)))
