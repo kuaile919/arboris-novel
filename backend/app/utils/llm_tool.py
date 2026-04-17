@@ -2,6 +2,7 @@
 # AIMETA P=LLM工具_大模型调用辅助|R=请求构建_响应解析|NR=不含业务逻辑|E=LLMTool|X=internal|A=工具类|D=httpx,anthropic|S=net|RD=./README.ai
 """多提供方 LLM 工具封装，支持 OpenAI 和 Anthropic。"""
 
+import asyncio
 import os
 from dataclasses import asdict, dataclass
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union
@@ -163,19 +164,43 @@ class LLMClient:
         logger.info("[LLMClient] messages_count=%d, max_tokens=%d", len(chat_messages), request_params["max_tokens"])
         logger.debug("[LLMClient] request_params=%s", request_params)
 
-        try:
-            async with self._client.messages.stream(**request_params) as stream:
-                async for text in stream.text_stream:
-                    yield {"content": text, "finish_reason": None}
+        retryable_status_codes = {429, 500, 502, 503, 504}
+        max_retries = 2
 
-                # 获取最终响应以确定结束原因
-                final_message = await stream.get_final_message()
-                logger.info("[LLMClient] _stream_anthropic 完成, stop_reason=%s", final_message.stop_reason)
-                yield {"content": None, "finish_reason": final_message.stop_reason}
-        except Exception as e:
-            logger.error("[LLMClient] _stream_anthropic 异常: %s, type=%s", str(e), type(e).__name__)
-            logger.error("[LLMClient] 异常详情", exc_info=True)
-            raise
+        for attempt in range(1, max_retries + 1):
+            emitted_content = False
+            try:
+                async with self._client.messages.stream(**request_params) as stream:
+                    async for text in stream.text_stream:
+                        emitted_content = True
+                        yield {"content": text, "finish_reason": None}
+
+                    # 获取最终响应以确定结束原因
+                    final_message = await stream.get_final_message()
+                    logger.info("[LLMClient] _stream_anthropic 完成, stop_reason=%s", final_message.stop_reason)
+                    yield {"content": None, "finish_reason": final_message.stop_reason}
+                return
+            except Exception as e:
+                status_code = getattr(e, "status_code", None)
+                text_payload = str(e)
+                inferred_500 = status_code is None and "'code': '500'" in text_payload
+                retryable = status_code in retryable_status_codes or inferred_500
+
+                if emitted_content or not retryable or attempt >= max_retries:
+                    logger.error("[LLMClient] _stream_anthropic 异常: %s, type=%s", text_payload, type(e).__name__)
+                    logger.error("[LLMClient] 异常详情", exc_info=True)
+                    raise
+
+                wait_seconds = attempt
+                logger.warning(
+                    "[LLMClient] _stream_anthropic 临时错误，准备重试: attempt=%d/%d status=%s wait=%ss error=%s",
+                    attempt,
+                    max_retries,
+                    status_code,
+                    wait_seconds,
+                    text_payload,
+                )
+                await asyncio.sleep(wait_seconds)
 
     async def _stream_openai(
         self,

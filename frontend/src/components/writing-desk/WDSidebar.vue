@@ -203,7 +203,6 @@
                       </svg>
                     </button>
                     <button
-                      v-if="!isChapterCompleted(chapter.chapter_number)"
                       @click.stop="$emit('editChapter', chapter)"
                       class="md-icon-btn md-ripple"
                       title="编辑大纲"

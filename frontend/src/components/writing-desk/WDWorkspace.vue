@@ -22,32 +22,6 @@
             <h3 class="md-title-medium md-on-surface mb-1">{{ selectedChapterOutline?.title || '未知标题' }}</h3>
             <p class="md-body-small md-on-surface-variant">{{ selectedChapterOutline?.summary || '暂无章节描述' }}</p>
           </div>
-
-          <div class="flex items-center gap-2">
-            <button
-              v-if="isChapterCompleted(selectedChapterNumber)"
-              @click="openEditModal"
-              class="md-btn md-btn-tonal md-ripple flex items-center gap-2 whitespace-nowrap"
-            >
-              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
-              </svg>
-              手动编辑
-            </button>
-            <button
-              @click="confirmRegenerateChapter"
-              :disabled="generatingChapter === selectedChapterNumber"
-              class="md-btn md-btn-filled md-ripple flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
-            >
-              <svg v-if="generatingChapter === selectedChapterNumber" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
-                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
-              </svg>
-              <svg v-else class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
-              </svg>
-              {{ generatingChapter === selectedChapterNumber ? '生成中...' : '重新生成' }}
-            </button>
-          </div>
         </div>
       </div>
 
@@ -62,9 +36,10 @@
           @confirmVersionSelection="$emit('confirmVersionSelection')"
           @generateChapter="$emit('generateChapter', $event)"
           @showVersionSelector="$emit('showVersionSelector')"
-          @regenerateChapter="$emit('regenerateChapter')"
+          @regenerateChapter="confirmRegenerateChapter"
           @evaluateChapter="$emit('evaluateChapter')"
           @showEvaluationDetail="$emit('showEvaluationDetail')"
+          @openEditModal="openEditModal"
         />
       </div>
     </div>
@@ -90,17 +65,55 @@
         <!-- 模态框内容 -->
         <div class="flex-1 p-6 overflow-hidden">
           <div class="flex flex-col h-full">
-            <label class="md-text-field-label mb-2">
-              章节内容
-            </label>
-            <textarea
-              v-model="editingContent"
-              class="md-textarea flex-1 w-full resize-none"
-              placeholder="请输入章节内容..."
-              :disabled="isSaving"
-            ></textarea>
-            <div class="md-body-small md-on-surface-variant mt-2">
-              字数统计: {{ editingContent.length }}
+            <div class="flex flex-col gap-4 mb-4">
+              <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-1 cursor-pointer select-none md-body-small md-on-surface-variant">
+                  <input v-model="lockMasterScroll" type="checkbox" class="cursor-pointer" />
+                  <span>锁定主列跟随</span>
+                </label>
+                <template v-if="lockMasterScroll">
+                  <label class="flex items-center gap-1 cursor-pointer select-none md-body-small md-on-surface-variant">
+                    <input v-model="masterScrollColumn" type="radio" value="left" class="cursor-pointer" />
+                    <span>主列：左侧当前文</span>
+                  </label>
+                  <label class="flex items-center gap-1 cursor-pointer select-none md-body-small md-on-surface-variant">
+                    <input v-model="masterScrollColumn" type="radio" value="right" class="cursor-pointer" />
+                    <span>主列：右侧参考稿</span>
+                  </label>
+                </template>
+              </div>
+              <p class="md-body-small md-on-surface-variant">
+                左侧是手动编辑区，右侧展示 AI 备选版本供复制参考（右侧只读，可直接选中文本后复制粘贴到左侧）。
+              </p>
+            </div>
+            <div class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div class="min-h-0 flex flex-col">
+                <div class="md-body-small md-on-surface-variant mb-2">当前文（可编辑）</div>
+                <textarea
+                  ref="leftEditorEl"
+                  v-model="editingContent"
+                  class="md-textarea flex-1 w-full resize-none"
+                  placeholder="请输入章节内容..."
+                  :disabled="isSaving"
+                  @scroll="handleSyncScroll('left')"
+                ></textarea>
+              </div>
+              <div class="min-h-0 flex flex-col">
+                <div class="md-body-small md-on-surface-variant mb-2">AI 备选版本（只读参考）</div>
+                <textarea
+                  ref="rightReferenceEl"
+                  :value="referenceContent"
+                  class="md-textarea flex-1 w-full resize-none"
+                  readonly
+                  @scroll="handleSyncScroll('right')"
+                ></textarea>
+                <div v-if="!referenceContent.trim()" class="md-body-small md-on-surface-variant mt-2">
+                  暂无可用的另一版本参考稿。
+                </div>
+              </div>
+            </div>
+            <div class="md-body-small md-on-surface-variant mt-3">
+              左侧字数统计: {{ editingContent.length }}
             </div>
           </div>
         </div>
@@ -179,7 +192,13 @@ const confirmRegenerateChapter = async () => {
 // 编辑模态框状态
 const showEditModal = ref(false)
 const editingContent = ref('')
+const referenceContent = ref('')
 const isSaving = ref(false)
+const leftEditorEl = ref<HTMLTextAreaElement | null>(null)
+const rightReferenceEl = ref<HTMLTextAreaElement | null>(null)
+const ignoreNextScrollFrom = ref<'left' | 'right' | null>(null)
+const lockMasterScroll = ref(true)
+const masterScrollColumn = ref<'left' | 'right'>('left')
 
 // 清理版本内容的辅助函数
 const cleanVersionContent = (content: string): string => {
@@ -221,9 +240,38 @@ const cleanVersionContent = (content: string): string => {
   return cleaned
 }
 
+const findAlternativeVersionContent = (currentContent: string): string | null => {
+  if (Array.isArray(props.availableVersions) && props.availableVersions.length > 0) {
+    for (const version of props.availableVersions) {
+      const candidate = cleanVersionContent(version?.content || '')
+      if (!candidate.trim()) continue
+      if (candidate.trim() !== currentContent.trim()) {
+        return candidate
+      }
+    }
+  }
+
+  const versions = selectedChapter.value?.versions
+  if (!Array.isArray(versions) || versions.length === 0) {
+    return null
+  }
+
+  for (const version of versions) {
+    const candidate = cleanVersionContent(version || '')
+    if (!candidate.trim()) continue
+    if (candidate.trim() !== currentContent.trim()) {
+      return candidate
+    }
+  }
+
+  return null
+}
+
 const openEditModal = () => {
   if (selectedChapter.value?.content) {
-    editingContent.value = cleanVersionContent(selectedChapter.value.content)
+    const currentContent = cleanVersionContent(selectedChapter.value.content)
+    editingContent.value = currentContent
+    referenceContent.value = findAlternativeVersionContent(currentContent) || ''
     showEditModal.value = true
   }
 }
@@ -231,7 +279,33 @@ const openEditModal = () => {
 const closeEditModal = () => {
   showEditModal.value = false
   editingContent.value = ''
+  referenceContent.value = ''
   isSaving.value = false
+  ignoreNextScrollFrom.value = null
+}
+
+const handleSyncScroll = (source: 'left' | 'right') => {
+  if (lockMasterScroll.value && source !== masterScrollColumn.value) {
+    return
+  }
+
+  if (ignoreNextScrollFrom.value === source) {
+    ignoreNextScrollFrom.value = null
+    return
+  }
+
+  const sourceEl = source === 'left' ? leftEditorEl.value : rightReferenceEl.value
+  const targetEl = source === 'left' ? rightReferenceEl.value : leftEditorEl.value
+  const targetKey: 'left' | 'right' = source === 'left' ? 'right' : 'left'
+
+  if (!sourceEl || !targetEl) return
+
+  const sourceMax = sourceEl.scrollHeight - sourceEl.clientHeight
+  const targetMax = targetEl.scrollHeight - targetEl.clientHeight
+  const ratio = sourceMax > 0 ? sourceEl.scrollTop / sourceMax : 0
+
+  ignoreNextScrollFrom.value = targetKey
+  targetEl.scrollTop = targetMax > 0 ? ratio * targetMax : 0
 }
 
 const saveEditedContent = async () => {

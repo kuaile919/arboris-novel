@@ -13,6 +13,11 @@ import httpx
 from fastapi import HTTPException, status
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError
 
+try:  # pragma: no cover - 运行环境未安装时兼容
+    from anthropic import APIStatusError as AnthropicAPIStatusError
+except ImportError:  # pragma: no cover - anthropic 为可选依赖
+    AnthropicAPIStatusError = None
+
 from ..core.config import settings
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..repositories.system_config_repository import SystemConfigRepository
@@ -313,6 +318,43 @@ class LLMService:
         except HTTPException:
             raise
         except Exception as exc:
+            if AnthropicAPIStatusError and isinstance(exc, AnthropicAPIStatusError):
+                status_code = getattr(exc, "status_code", None)
+                body = getattr(exc, "body", None)
+                request_id = None
+                provider_detail = None
+
+                if isinstance(body, dict):
+                    request_id = body.get("request_id")
+                    error_data = body.get("error", {})
+                    if isinstance(error_data, dict):
+                        provider_detail = error_data.get("message_zh") or error_data.get("message")
+                provider_detail = provider_detail or str(exc)
+
+                logger.error(
+                    "LLM anthropic status error: attempt=%d/%d provider=%s model=%s user_id=%s status=%s request_id=%s detail=%s",
+                    attempt_index,
+                    total_attempts,
+                    config.get("provider"),
+                    config.get("model"),
+                    user_id,
+                    status_code,
+                    request_id,
+                    provider_detail,
+                    exc_info=exc,
+                )
+
+                if status_code in (401, 403):
+                    raise HTTPException(status_code=401, detail="API Key 无效或权限不足") from exc
+                if status_code == 429:
+                    detail = f"AI 服务限流，请稍后重试（request_id: {request_id}）" if request_id else "AI 服务限流，请稍后重试"
+                    raise HTTPException(status_code=503, detail=detail) from exc
+                if status_code and status_code >= 500:
+                    detail = f"AI 服务暂时不可用，请稍后重试（request_id: {request_id}）" if request_id else "AI 服务暂时不可用，请稍后重试"
+                    raise HTTPException(status_code=503, detail=detail) from exc
+                detail = provider_detail[:300] if provider_detail else "AI 服务请求失败"
+                raise HTTPException(status_code=400, detail=detail) from exc
+
             error_type = type(exc).__name__
             error_msg = str(exc)
             logger.error(

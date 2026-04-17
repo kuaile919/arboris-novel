@@ -25,12 +25,32 @@
     </div>
 
     <div class="md-card md-card-outlined p-6" style="border-radius: var(--md-radius-xl);">
-      <div class="flex items-center justify-between mb-4 gap-3">
-        <h4 class="md-title-medium font-semibold">章节内容</h4>
+      <div class="flex flex-col gap-4 mb-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="flex items-center gap-3">
+          <h4 class="md-title-medium font-semibold">章节内容</h4>
           <div class="md-body-small md-on-surface-variant">
             约 {{ Math.round(cleanVersionContent(selectedChapter.content || '').length / 100) * 100 }} 字
           </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 xl:justify-end">
+          <button
+            class="md-btn md-btn-tonal md-ripple flex items-center gap-1"
+            @click="$emit('openEditModal')"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+            </svg>
+            编辑章节内容
+          </button>
+          <button
+            class="md-btn md-btn-filled md-ripple flex items-center gap-1"
+            @click="$emit('regenerateChapter')"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+            </svg>
+            重新生成章节内容
+          </button>
           <!-- 分层优化按钮 -->
           <button
             class="md-btn md-btn-tonal md-ripple flex items-center gap-1"
@@ -485,7 +505,7 @@ interface SelectionPolishHistory {
 
 const props = defineProps<Props>()
 
-defineEmits(['showVersionSelector'])
+defineEmits(['showVersionSelector', 'openEditModal', 'regenerateChapter'])
 
 // 优化相关状态
 const showOptimizer = ref(false)
