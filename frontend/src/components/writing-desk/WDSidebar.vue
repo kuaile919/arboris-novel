@@ -95,7 +95,6 @@
                   <div class="flex-shrink-0 pt-1">
                     <input
                       type="checkbox"
-                      :disabled="isChapterCompleted(chapter.chapter_number)"
                       :checked="selectedForDeletion.includes(chapter.chapter_number)"
                       @click.stop="toggleSelection(chapter.chapter_number)"
                       class="h-4 w-4 rounded border-[var(--md-outline)] text-[var(--md-primary)] focus:ring-[var(--md-primary)] disabled:opacity-50 accent-[var(--md-primary)]"
@@ -321,7 +320,6 @@ const hasIncompleteChapters = computed(() => {
 })
 
 function toggleSelection(chapterNumber: number) {
-  if (isChapterCompleted(chapterNumber)) return
   const index = selectedForDeletion.value.indexOf(chapterNumber)
   if (index > -1) {
     selectedForDeletion.value.splice(index, 1)

@@ -739,6 +739,8 @@ async def _rewrite_to_target_length(
     chapter_mission: Optional[dict],
     outline_title: str,
     outline_summary: str,
+    must_plant_items: List[Dict[str, Any]],
+    must_payoff_items: List[Dict[str, Any]],
     min_chars: int,
     target_max_chars: int,
     hard_max_chars: int,
@@ -757,6 +759,12 @@ async def _rewrite_to_target_length(
 标题：{outline_title}
 摘要：{outline_summary}
 
+[必须保留的必埋伏笔]
+{json.dumps(must_plant_items, ensure_ascii=False, indent=2) if must_plant_items else "无"}
+
+[必须保留的必收伏笔]
+{json.dumps(must_payoff_items, ensure_ascii=False, indent=2) if must_payoff_items else "无"}
+
 [章节导演脚本]
 {json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无"}
 
@@ -766,7 +774,7 @@ async def _rewrite_to_target_length(
 
 [要求]
 1. 保留起-承-转-钩结构，不写成摘要。
-2. 保留关键事件与伏笔触发点。
+2. 保留关键事件、大纲目标、所有“必埋伏笔”和“必收伏笔”，不得删除或弱化为不可识别。
 3. 优先压缩重复描写、赘余修饰、无效对话。
 4. 结尾必须完整，不允许断句或突然中断。
 """
@@ -1862,12 +1870,12 @@ async def generate_chapter(
             contents.append(str(variant))
             metadata.append({"raw": variant})
 
-    # 字数审计日志（不做常规截断）
+    # 字数审计 + 超上限压缩（入库前强制兜底）
     for i, content in enumerate(contents):
         word_count = len(content)
         if word_count > chapter_hard_max_chars:
             logger.warning(
-                "项目 %s 第 %s 章版本 %s 字数超出硬上限: %s 字（目标: %s-%s，硬上限: %s）",
+                "项目 %s 第 %s 章版本 %s 字数超出硬上限: %s 字（目标: %s-%s，硬上限: %s），开始压缩",
                 project_id,
                 request.chapter_number,
                 i + 1,
@@ -1876,6 +1884,64 @@ async def generate_chapter(
                 chapter_target_max_chars,
                 chapter_hard_max_chars,
             )
+            compressed = await _rewrite_to_target_length(
+                llm_service=llm_service,
+                original_text=content,
+                chapter_mission=chapter_mission,
+                outline_title=outline_title,
+                outline_summary=outline_summary,
+                must_plant_items=must_plant_items,
+                must_payoff_items=due_payoff_items,
+                min_chars=chapter_min_chars,
+                target_max_chars=chapter_target_max_chars,
+                hard_max_chars=chapter_hard_max_chars,
+                user_id=current_user.id,
+            )
+            compressed_count = len(compressed or "")
+            compressed_contract = None
+            if compressed and compressed_count <= chapter_hard_max_chars:
+                compressed_contract = await _check_chapter_execution_contract(
+                    llm_service=llm_service,
+                    user_id=current_user.id,
+                    chapter_number=request.chapter_number,
+                    generated_text=compressed,
+                    outline_title=outline_title,
+                    outline_summary=outline_summary,
+                    must_plant_items=must_plant_items,
+                    must_payoff_items=due_payoff_items,
+                )
+
+            if compressed and compressed_count <= chapter_hard_max_chars and compressed_contract and compressed_contract.get("passed", False):
+                contents[i] = compressed
+                metadata[i]["length_adjusted"] = {
+                    "strategy": "llm_compress",
+                    "before": word_count,
+                    "after": compressed_count,
+                    "hard_max": chapter_hard_max_chars,
+                }
+                logger.info(
+                    "项目 %s 第 %s 章版本 %s 压缩完成且通过硬约束复检: %s -> %s 字",
+                    project_id,
+                    request.chapter_number,
+                    i + 1,
+                    word_count,
+                    compressed_count,
+                )
+            else:
+                metadata[i]["length_adjusted"] = {
+                    "strategy": "skip_compress_preserve_contract",
+                    "before": word_count,
+                    "after": word_count,
+                    "hard_max": chapter_hard_max_chars,
+                    "reason": "compression_failed_or_contract_failed",
+                }
+                logger.warning(
+                    "项目 %s 第 %s 章版本 %s 压缩未通过（可能超限或破坏大纲/伏笔），已保留原文以保护硬约束: %s 字",
+                    project_id,
+                    request.chapter_number,
+                    i + 1,
+                    word_count,
+                )
         elif word_count < chapter_min_chars:
             logger.warning(
                 "项目 %s 第 %s 章版本 %s 字数偏短: %s 字（目标: %s-%s）",

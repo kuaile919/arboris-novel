@@ -49,11 +49,19 @@
                   </p>
                   <p class="md-body-small">
                     大纲覆盖：{{ check.outline_covered ? '是' : '否' }}
+                    ｜ 已覆盖必埋：{{ getCoveredPlants(check).length }}
+                    ｜ 已覆盖必收：{{ getCoveredPayoffs(check).length }}
                     ｜ 缺失必埋：{{ check.missing_plants?.length || 0 }}
                     ｜ 缺失必收：{{ check.missing_payoffs?.length || 0 }}
                   </p>
                   <p v-if="check.missing_outline_points?.length" class="md-body-small mt-1">
                     大纲缺失点：{{ check.missing_outline_points.join('；') }}
+                  </p>
+                  <p v-if="getCoveredPlants(check).length" class="md-body-small mt-1">
+                    已覆盖必埋：{{ formatCoveredItems(getCoveredPlants(check)) }}
+                  </p>
+                  <p v-if="getCoveredPayoffs(check).length" class="md-body-small mt-1">
+                    已覆盖必收：{{ formatCoveredItems(getCoveredPayoffs(check)) }}
                   </p>
                   <p v-if="check.missing_plants?.length" class="md-body-small mt-1">
                     未覆盖必埋：{{ formatMissingItems(check.missing_plants) }}
@@ -234,6 +242,42 @@ const parseMarkdown = (text: string | null): string => {
 }
 
 const formatMissingItems = (items: Array<{ id?: number; name?: string; content?: string }> = []): string => {
+  if (!items.length) return '无'
+  return items
+    .map((item) => {
+      const label = item.name?.trim() || (item.id ? `#${item.id}` : '未命名')
+      const content = (item.content || '').trim()
+      return content ? `${label}（${content}）` : label
+    })
+    .join('；')
+}
+
+const getCoveredItems = (
+  requiredItems: Array<{ id?: number; name?: string; content?: string }> = [],
+  missingItems: Array<{ id?: number; name?: string; content?: string }> = []
+) => {
+  if (!requiredItems.length) return []
+  const missingIds = new Set(
+    missingItems
+      .map((item) => item.id)
+      .filter((id): id is number => typeof id === 'number')
+  )
+  return requiredItems.filter((item) => !(typeof item.id === 'number' && missingIds.has(item.id)))
+}
+
+const getCoveredPlants = (check: any) => {
+  const required = parsedEvaluation.value?.execution_summary?.required_plants || []
+  const missing = check?.missing_plants || []
+  return getCoveredItems(required, missing)
+}
+
+const getCoveredPayoffs = (check: any) => {
+  const required = parsedEvaluation.value?.execution_summary?.required_payoffs || []
+  const missing = check?.missing_payoffs || []
+  return getCoveredItems(required, missing)
+}
+
+const formatCoveredItems = (items: Array<{ id?: number; name?: string; content?: string }> = []): string => {
   if (!items.length) return '无'
   return items
     .map((item) => {
