@@ -79,6 +79,12 @@ const router = createRouter({
       component: () => import('../views/SettingsView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/style-library',
+      name: 'style-library',
+      component: () => import('../views/StyleLibraryView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

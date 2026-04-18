@@ -98,7 +98,7 @@
         </p>
 
         <!-- Mode Selection Cards -->
-        <div class="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
           <!-- Trend Insight Card -->
           <div
             @click="goToTrends"
@@ -147,6 +147,24 @@
             <h2 class="md-title-large mb-2" style="color: var(--md-success);">小说工作台</h2>
             <p class="md-body-medium" style="color: var(--md-on-surface-variant);">
               查看、编辑和管理你所有的小说项目工程。
+            </p>
+          </div>
+
+          <!-- Style Library Card -->
+          <div
+            @click="goToStyleLibrary"
+            class="md-card md-card-elevated group p-8 cursor-pointer transition-all duration-300 hover:scale-[1.02]"
+            style="border-radius: var(--md-radius-xl);"
+          >
+            <div class="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center" style="background-color: var(--md-secondary-container);">
+              <svg class="w-8 h-8" style="color: var(--md-on-secondary-container);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+              </svg>
+            </div>
+            <h2 class="md-title-large mb-2" style="color: var(--md-secondary);">写作风格库</h2>
+            <p class="md-body-medium" style="color: var(--md-on-surface-variant);">
+              维护账号级的大纲/章节风格规则，并自动注入到生成提示词。
             </p>
           </div>
         </div>
@@ -235,5 +253,9 @@ const goToTrends = () => {
 
 const goToWorkspace = () => {
   router.push('/workspace')
+}
+
+const goToStyleLibrary = () => {
+  router.push('/style-library')
 }
 </script>

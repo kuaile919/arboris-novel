@@ -33,6 +33,8 @@ from ...schemas.novel import (
     Chapter as ChapterSchema,
     ChapterGenerationStatus,
     ChapterRuntimeStatus,
+    WritingStyleLibrary,
+    UpdateWritingStyleLibraryRequest,
     AdvancedGenerateRequest,
     AdvancedGenerateResponse,
     DeleteChapterRequest,
@@ -94,6 +96,125 @@ def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+def _is_tail_incomplete(text: str) -> bool:
+    """粗判正文尾句是否未收束（用于兜底修复 token 截断）。"""
+    value = (text or "").rstrip()
+    if not value:
+        return False
+    # 常见完整结尾标记（包含中文/英文及引号闭合）
+    terminal_chars = set("。！？…?!”’」』》）)]")
+    if value[-1] in terminal_chars:
+        return False
+    # 末尾若是逗号、顿号、冒号等高概率为未完句
+    if value[-1] in {",", "，", "、", ":", "：", ";", "；", "-", "—"}:
+        return True
+    # 末尾是汉字/字母/数字且没有句末符，也视为可疑
+    return True
+
+
+def _trim_to_sentence_boundary(text: str, max_chars: int) -> str:
+    """在不超过 max_chars 的前提下，尽量按句号边界截断，避免半句。"""
+    value = (text or "").strip()
+    if len(value) <= max_chars:
+        return value
+
+    candidate = value[:max_chars]
+    punctuation = "。！？…?!”’」』》）)]"
+    last_idx = -1
+    for ch in punctuation:
+        idx = candidate.rfind(ch)
+        if idx > last_idx:
+            last_idx = idx
+
+    # 留至少 70% 内容，避免截得过短
+    if last_idx >= int(max_chars * 0.7):
+        return candidate[: last_idx + 1].rstrip()
+    return candidate.rstrip()
+
+
+def _truncate_text(text: Optional[str], max_chars: int) -> str:
+    value = (text or "").strip()
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars].rstrip() + "\n...(已截断)"
+
+
+def _trim_rules_block(rules_text: str, max_rules: int = 8, max_chars: int = 480) -> str:
+    lines = [line.strip() for line in (rules_text or "").splitlines() if line.strip()]
+    selected = lines[:max_rules]
+    return _truncate_text("\n".join(selected), max_chars)
+
+
+def _compact_writer_blueprint(blueprint: Dict[str, Any]) -> Dict[str, Any]:
+    compact: Dict[str, Any] = {
+        "title": blueprint.get("title"),
+        "genre": blueprint.get("genre"),
+        "style": blueprint.get("style"),
+        "tone": blueprint.get("tone"),
+        "world_setting": {},
+        "characters": [],
+        "relationships": [],
+    }
+
+    ws = blueprint.get("world_setting") if isinstance(blueprint.get("world_setting"), dict) else {}
+    compact["world_setting"] = {
+        "core_rules": _truncate_text(str(ws.get("core_rules") or ""), 280),
+        "key_locations": [
+            {
+                "name": item.get("name"),
+                "description": _truncate_text(str(item.get("description") or ""), 80),
+            }
+            for item in (ws.get("key_locations") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "factions": [
+            {
+                "name": item.get("name"),
+                "description": _truncate_text(str(item.get("description") or ""), 80),
+            }
+            for item in (ws.get("factions") or [])[:6]
+            if isinstance(item, dict)
+        ],
+    }
+
+    compact["characters"] = [
+        {
+            "name": item.get("name"),
+            "identity": _truncate_text(str(item.get("identity") or ""), 80),
+            "personality": _truncate_text(str(item.get("personality") or ""), 80),
+            "goals": _truncate_text(str(item.get("goals") or ""), 80),
+            "first_appear_chapter": item.get("first_appear_chapter"),
+        }
+        for item in (blueprint.get("characters") or [])[:10]
+        if isinstance(item, dict) and item.get("name")
+    ]
+
+    compact["relationships"] = [
+        {
+            "from": item.get("from") or item.get("character_from"),
+            "to": item.get("to") or item.get("character_to"),
+            "description": _truncate_text(str(item.get("description") or ""), 80),
+        }
+        for item in (blueprint.get("relationships") or [])[:12]
+        if isinstance(item, dict)
+    ]
+    return compact
+
+
+def _compact_chapter_mission(mission: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(mission, dict):
+        return {}
+    return {
+        "macro_beat": mission.get("macro_beat"),
+        "pov": mission.get("pov"),
+        "narrative_goal": _truncate_text(str(mission.get("narrative_goal") or ""), 140),
+        "must_happen": (mission.get("must_happen") or [])[:6],
+        "forbidden": (mission.get("forbidden") or [])[:6],
+        "ending_hook": _truncate_text(str(mission.get("ending_hook") or ""), 120),
+        "allowed_new_characters": (mission.get("allowed_new_characters") or [])[:4],
+    }
 
 
 def _collect_foreshadowing_terms(item: Dict[str, Any]) -> List[str]:
@@ -665,6 +786,55 @@ async def _rewrite_to_target_length(
         return original_text
 
 
+async def _complete_tail_sentence(
+    llm_service: LLMService,
+    text: str,
+    *,
+    user_id: int,
+) -> str:
+    """若正文尾句疑似被截断，尝试最小补全最后一句。"""
+    current = (text or "").rstrip()
+    if not current or not _is_tail_incomplete(current):
+        return current
+
+    tail_context = current[-500:]
+    prompt = f"""
+[正文尾部上下文]
+{tail_context}
+
+最后一句疑似被中断。请仅补全最后一句，使其语义与语气自然闭合。
+
+要求：
+1. 只输出“续写补全文字”，不要重复原文。
+2. 长度尽量短（建议 10-80 字）。
+3. 不能改动已有剧情，只做句子收束。
+4. 补全后必须有完整句末标点（。！？…）。
+"""
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt="你是中文小说文本修复器，专门补全被截断的尾句。",
+            conversation_history=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            user_id=user_id,
+            timeout=60.0,
+            response_format=None,
+            max_tokens=180,
+        )
+        continuation = remove_think_tags(response).strip()
+        continuation = re.sub(r"^([\"'“”‘’\s]+)", "", continuation)
+        if not continuation:
+            return current + "。"
+        if len(continuation) > 160:
+            continuation = continuation[:160]
+        completed = current + continuation
+        if _is_tail_incomplete(completed):
+            completed += "。"
+        return completed
+    except Exception as exc:
+        logger.warning("尾句补全失败，使用兜底标点收束: %s", exc)
+        return current + "。"
+
+
 async def _refresh_edit_summary_and_ingest(
     project_id: str,
     chapter_number: int,
@@ -959,7 +1129,7 @@ async def generate_chapter(
     personal_rules = await style_rule_service.get_effective_rules(
         user_id=current_user.id,
         project_id=project_id,
-        rule_types=["general", "outline_generation", "chapter_writing"],
+        rule_types=["general", "chapter_writing"],
         limit=20,
     )
     personal_rules_text = _format_personal_rules_section(personal_rules)
@@ -1024,8 +1194,9 @@ async def generate_chapter(
     writing_notes = request.writing_notes or "无额外写作指令"
     writing_notes_for_director = writing_notes
     if personal_rules:
+        director_rules = _trim_rules_block(personal_rules_text, max_rules=6, max_chars=360)
         writing_notes_for_director = (
-            f"{writing_notes}\n\n[用户个人风格规则]\n{personal_rules_text}\n"
+            f"{writing_notes}\n\n[用户个人风格规则]\n{director_rules}\n"
             "请将以上规则作为优先风格约束。"
         )
 
@@ -1155,7 +1326,7 @@ async def generate_chapter(
     else:
         chunk_blocks.append("### 远章补充（可选，软参考）\n- 无")
 
-    rag_chunks_text = "\n\n".join(chunk_blocks)
+    rag_chunks_text = _truncate_text("\n\n".join(chunk_blocks), 1300)
     logger.info(
         "章节剧情上下文已构建: project=%s chapter=%s backbone_chapters=%s remote_chapter=%s dropped_current_or_future=%s",
         project_id,
@@ -1215,7 +1386,7 @@ async def generate_chapter(
     else:
         summary_blocks.append("### 远章补充（可选，软参考）\n- 无")
 
-    rag_summaries_text = "\n\n".join(summary_blocks)
+    rag_summaries_text = _truncate_text("\n\n".join(summary_blocks), 1000)
     logger.info(
         "章节摘要上下文已构建: project=%s chapter=%s recent_backbone=%s remote_semantic=%s",
         project_id,
@@ -1233,14 +1404,17 @@ async def generate_chapter(
         logger.error("未配置写作提示词，无法生成章节内容")
         raise HTTPException(status_code=500, detail="缺少写作提示词，请联系管理员配置")
 
-    # 使用裁剪后的蓝图（移除了 full_synopsis 和未登场角色）
-    blueprint_text = json.dumps(writer_blueprint, ensure_ascii=False, indent=2)
+    # 使用进一步压缩后的蓝图，控制提示词体积
+    compact_blueprint = _compact_writer_blueprint(writer_blueprint)
+    blueprint_text = json.dumps(compact_blueprint, ensure_ascii=False, indent=2)
     
-    # 构建导演脚本文本
-    mission_text = json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无导演脚本"
+    # 构建压缩版导演脚本
+    mission_compact = _compact_chapter_mission(chapter_mission)
+    mission_text = json.dumps(mission_compact, ensure_ascii=False, indent=2) if mission_compact else "无导演脚本"
     
     # 构建禁止角色列表
-    forbidden_text = json.dumps(forbidden_characters, ensure_ascii=False) if forbidden_characters else "无"
+    forbidden_text = json.dumps(forbidden_characters[:12], ensure_ascii=False) if forbidden_characters else "无"
+    personal_rules_compact = _trim_rules_block(personal_rules_text, max_rules=8, max_chars=480)
 
     # 构建伏笔执行清单（硬约束）
     foreshadowing_service = ForeshadowingService(session)
@@ -1365,6 +1539,21 @@ async def generate_chapter(
         f"- 若标记为【超期升级】（到期后连续{overdue_escalation_chapters}章未回收），应优先处理。"
     )
     foreshadowing_contract_text = "\n".join(hard_contract_lines)
+    strict_execution_protocol = (
+        "强制执行协议（违背即判定失败并丢弃重生成）：\n"
+        "1. 必须完整覆盖本章大纲标题与摘要目标。\n"
+        "2. 必须逐条落地“必埋伏笔”。\n"
+        "3. 必须逐条落地“必收伏笔”。\n"
+        "4. 任一条缺失都视为不合格版本，系统会直接重生成。\n"
+        "5. 首次生成就必须满足 1-4 条，不能依赖后续校验补救。"
+    )
+    first_pass_hit_protocol = (
+        "首轮命中执行法（仅内部执行，不要输出这些步骤）：\n"
+        "A. 写作前先做“约束映射”：把大纲主目标、每条必埋、每条必收分别绑定到正文中的具体段落位置。\n"
+        "B. 每条必埋/必收都要有可被读者直接识别的明确描写，不能只做暗示性擦边。\n"
+        "C. 收尾前做一次自检：逐条确认都已落地，再输出正文。\n"
+        "D. 若字数接近上限，优先压缩修辞，不得删减任何硬约束条目。"
+    )
 
     if soft_reminder_items:
         soft_lines = []
@@ -1396,6 +1585,8 @@ async def generate_chapter(
         continuity_hint = "这是第一章，可以用感官冲击开场。"
 
     prompt_sections = [
+        ("[强制执行协议]", strict_execution_protocol),
+        ("[首轮命中执行法]", first_pass_hit_protocol),
         ("[世界蓝图](JSON，已裁剪)", blueprint_text),
         ("[上一章摘要]", previous_summary_text or "暂无（这是第一章）"),
         ("[章节衔接要求]", continuity_hint),
@@ -1404,146 +1595,110 @@ async def generate_chapter(
         ("[章节摘要上下文](Markdown)", rag_summaries_text),
         ("[本章伏笔执行清单](硬约束)", foreshadowing_contract_text),
         ("[本章伏笔提醒](软提醒)", foreshadowing_soft_reminder_text),
-        ("[用户个人风格规则](优先约束)", personal_rules_text),
+        ("[用户个人风格规则](优先约束)", personal_rules_compact),
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
         ("[禁止角色](本章不允许提及)", forbidden_text),
         ("[字数要求]", "本章节正文字数必须控制在 2400-3000 字，3000 字是硬上限。请在心里将全章分为「开场(约600字)→发展(约1100字)→转折(约800字)→钩子(约300字)」四段，累计到约 2700 字时主动进入钩子收尾。注意：这只是心理规划，绝对不要在正文中写出「**【开场】**」「**【发展】**」等结构标记。"),
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
-    logger.debug("章节写作提示词长度: %s 字符", len(prompt_input))
+    logger.debug(
+        "章节写作提示词长度: total=%s blueprint=%s mission=%s rag_chunks=%s rag_summaries=%s rules=%s",
+        len(prompt_input),
+        len(blueprint_text),
+        len(mission_text),
+        len(rag_chunks_text),
+        len(rag_summaries_text),
+        len(personal_rules_compact),
+    )
 
     # ========== 6. L3 Writer: 生成正文 ==========
     async def _generate_single_version(idx: int, version_style_hint: Optional[str] = None) -> Dict:
         """生成单个版本，支持差异化风格提示"""
-        try:
-            # 如果有版本风格提示，添加到 prompt_input
-            final_prompt_input = prompt_input
-            if version_style_hint:
-                final_prompt_input += f"\n\n[版本风格提示]\n{version_style_hint}"
-
+        max_version_attempts = 3
+        attempt_feedback = ""
+        for attempt in range(1, max_version_attempts + 1):
             try:
-                response = await llm_service.get_llm_response(
-                    system_prompt=writer_prompt,
-                    conversation_history=[{"role": "user", "content": final_prompt_input}],
-                    temperature=0.9,
-                    user_id=current_user.id,
-                    timeout=600.0,
-                    response_format=None,
-                    max_tokens=2200,  # 首轮进一步控长，降低超出 3000 字概率
-                )
-            except HTTPException as exc:
-                detail_text = str(exc.detail)
-                # 个别模型会出现“finish_reason=length 且正文为空”，这里做一次小幅放宽重试。
-                if exc.status_code == 503 and "长度限制" in detail_text:
-                    logger.warning(
-                        "项目 %s 第 %s 章版本 %s 首轮空响应(length) ，放宽 max_tokens 重试一次",
-                        project_id,
-                        request.chapter_number,
-                        idx + 1,
-                    )
+                final_prompt_input = prompt_input
+                if version_style_hint:
+                    final_prompt_input += f"\n\n[版本风格提示]\n{version_style_hint}"
+                if attempt_feedback:
+                    final_prompt_input += f"\n\n[上次未通过原因]\n{attempt_feedback}\n请整章重写并逐条补齐。"
+
+                generation_temperature = 0.78 if attempt == 1 else 0.72
+                generation_max_tokens = 3200
+                try:
                     response = await llm_service.get_llm_response(
                         system_prompt=writer_prompt,
                         conversation_history=[{"role": "user", "content": final_prompt_input}],
-                        temperature=0.9,
+                        temperature=generation_temperature,
                         user_id=current_user.id,
                         timeout=600.0,
                         response_format=None,
-                        max_tokens=2600,
+                        max_tokens=generation_max_tokens,
                     )
-                else:
-                    raise
-            cleaned = remove_think_tags(response)
-            normalized = unwrap_markdown_json(cleaned)
+                except HTTPException as exc:
+                    detail_text = str(exc.detail)
+                    if exc.status_code == 503 and "长度限制" in detail_text:
+                        logger.warning(
+                            "项目 %s 第 %s 章版本 %s 第 %s 轮空响应(length) ，放宽 max_tokens 重试一次",
+                            project_id,
+                            request.chapter_number,
+                            idx + 1,
+                            attempt,
+                        )
+                        response = await llm_service.get_llm_response(
+                            system_prompt=writer_prompt,
+                            conversation_history=[{"role": "user", "content": final_prompt_input}],
+                            temperature=generation_temperature,
+                            user_id=current_user.id,
+                            timeout=600.0,
+                            response_format=None,
+                            max_tokens=3800,
+                        )
+                    else:
+                        raise
+                cleaned = remove_think_tags(response)
+                normalized = unwrap_markdown_json(cleaned)
             
-            # ========== 7. 护栏检查 ==========
-            guardrail_result = guardrails.check(
-                generated_text=normalized,
-                forbidden_characters=forbidden_characters,
-                allowed_new_characters=allowed_new_characters,
-                pov=chapter_mission.get("pov") if chapter_mission else None,
-            )
-
-            final_content = normalized
-            guardrail_metadata = {"passed": guardrail_result.passed, "violations": []}
-
-            if not guardrail_result.passed:
-                logger.warning(
-                    "项目 %s 第 %s 章版本 %s 检测到 %s 个违规",
-                    project_id,
-                    request.chapter_number,
-                    idx + 1,
-                    len(guardrail_result.violations),
-                )
-                guardrail_metadata["violations"] = [
-                    {"type": v.type, "severity": v.severity, "description": v.description}
-                    for v in guardrail_result.violations
-                ]
-
-                # 尝试自动修复
-                violations_text = guardrails.format_violations_for_rewrite(guardrail_result)
-                final_content = await _rewrite_with_guardrails(
-                    llm_service=llm_service,
-                    prompt_service=prompt_service,
-                    original_text=normalized,
-                    chapter_mission=chapter_mission,
-                    violations_text=violations_text,
-                    user_id=current_user.id,
-                    min_chars=chapter_min_chars,
-                    max_chars=chapter_hard_max_chars,
-                    max_tokens=2200,
+                # ========== 7. 护栏检查 ==========
+                guardrail_result = guardrails.check(
+                    generated_text=normalized,
+                    forbidden_characters=forbidden_characters,
+                    allowed_new_characters=allowed_new_characters,
+                    pov=chapter_mission.get("pov") if chapter_mission else None,
                 )
 
-            # ========== 8. 章节执行硬约束检查（大纲 + 埋 + 收） ==========
-            contract_check = await _check_chapter_execution_contract(
-                llm_service=llm_service,
-                user_id=current_user.id,
-                chapter_number=request.chapter_number,
-                generated_text=final_content,
-                outline_title=outline_title,
-                outline_summary=outline_summary,
-                must_plant_items=must_plant_items,
-                must_payoff_items=due_payoff_items,
-            )
-            if not contract_check["passed"]:
-                lines = ["检测到本章未满足硬约束："]
-                if not contract_check.get("outline_covered", False):
-                    lines.append("1. 未充分覆盖本章大纲目标")
-                    for point in contract_check.get("missing_outline_points", [])[:5]:
-                        lines.append(f"   - 缺失点：{point}")
-                missing_plants = contract_check.get("missing_plants", [])
-                if missing_plants:
-                    lines.append("2. 未覆盖的“必埋伏笔”：")
-                    for item in missing_plants:
-                        lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
-                missing_payoffs = contract_check.get("missing_payoffs", [])
-                if missing_payoffs:
-                    lines.append("3. 未覆盖的“必收伏笔”：")
-                    for item in missing_payoffs:
-                        lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
+                final_content = normalized
+                guardrail_metadata = {"passed": guardrail_result.passed, "violations": []}
 
-                contract_violations_text = "\n".join(lines)
+                if not guardrail_result.passed:
+                    logger.warning(
+                        "项目 %s 第 %s 章版本 %s 检测到 %s 个违规",
+                        project_id,
+                        request.chapter_number,
+                        idx + 1,
+                        len(guardrail_result.violations),
+                    )
+                    guardrail_metadata["violations"] = [
+                        {"type": v.type, "severity": v.severity, "description": v.description}
+                        for v in guardrail_result.violations
+                    ]
 
-                logger.warning(
-                    "项目 %s 第 %s 章版本 %s 未满足硬约束: outline_covered=%s missing_plants=%s missing_payoffs=%s，触发定向重写",
-                    project_id,
-                    request.chapter_number,
-                    idx + 1,
-                    contract_check.get("outline_covered", False),
-                    len(missing_plants),
-                    len(missing_payoffs),
-                )
-                final_content = await _rewrite_with_guardrails(
-                    llm_service=llm_service,
-                    prompt_service=prompt_service,
-                    original_text=final_content,
-                    chapter_mission=chapter_mission,
-                    violations_text=contract_violations_text,
-                    user_id=current_user.id,
-                    min_chars=chapter_min_chars,
-                    max_chars=chapter_hard_max_chars,
-                    max_tokens=2200,
-                )
-                # 重写后复检一次
+                    # 尝试自动修复
+                    violations_text = guardrails.format_violations_for_rewrite(guardrail_result)
+                    final_content = await _rewrite_with_guardrails(
+                        llm_service=llm_service,
+                        prompt_service=prompt_service,
+                        original_text=normalized,
+                        chapter_mission=chapter_mission,
+                        violations_text=violations_text,
+                        user_id=current_user.id,
+                        min_chars=chapter_min_chars,
+                        max_chars=chapter_hard_max_chars,
+                        max_tokens=3200,
+                    )
+
+                # ========== 8. 章节执行硬约束检查（大纲 + 埋 + 收） ==========
                 contract_check = await _check_chapter_execution_contract(
                     llm_service=llm_service,
                     user_id=current_user.id,
@@ -1554,84 +1709,168 @@ async def generate_chapter(
                     must_plant_items=must_plant_items,
                     must_payoff_items=due_payoff_items,
                 )
+                if not contract_check["passed"]:
+                    lines = ["检测到本章未满足硬约束："]
+                    if not contract_check.get("outline_covered", False):
+                        lines.append("1. 未充分覆盖本章大纲目标")
+                        for point in contract_check.get("missing_outline_points", [])[:5]:
+                            lines.append(f"   - 缺失点：{point}")
+                    missing_plants = contract_check.get("missing_plants", [])
+                    if missing_plants:
+                        lines.append("2. 未覆盖的“必埋伏笔”：")
+                        for item in missing_plants:
+                            lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
+                    missing_payoffs = contract_check.get("missing_payoffs", [])
+                    if missing_payoffs:
+                        lines.append("3. 未覆盖的“必收伏笔”：")
+                        for item in missing_payoffs:
+                            lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
 
-            def _extract_text(value: object) -> Optional[str]:
-                if not value:
-                    return None
-                if isinstance(value, str):
-                    return value
-                if isinstance(value, dict):
-                    for key in ("content", "chapter_content", "chapter_text", "text", "body", "story"):
-                        if value.get(key):
-                            nested = _extract_text(value.get(key))
+                    contract_violations_text = "\n".join(lines)
+
+                    logger.warning(
+                        "项目 %s 第 %s 章版本 %s 第 %s 轮未满足硬约束: outline_covered=%s missing_plants=%s missing_payoffs=%s，触发定向重写",
+                        project_id,
+                        request.chapter_number,
+                        idx + 1,
+                        attempt,
+                        contract_check.get("outline_covered", False),
+                        len(missing_plants),
+                        len(missing_payoffs),
+                    )
+                    final_content = await _rewrite_with_guardrails(
+                        llm_service=llm_service,
+                        prompt_service=prompt_service,
+                        original_text=final_content,
+                        chapter_mission=chapter_mission,
+                        violations_text=contract_violations_text,
+                        user_id=current_user.id,
+                        min_chars=chapter_min_chars,
+                        max_chars=chapter_hard_max_chars,
+                        max_tokens=3200,
+                    )
+                    contract_check = await _check_chapter_execution_contract(
+                        llm_service=llm_service,
+                        user_id=current_user.id,
+                        chapter_number=request.chapter_number,
+                        generated_text=final_content,
+                        outline_title=outline_title,
+                        outline_summary=outline_summary,
+                        must_plant_items=must_plant_items,
+                        must_payoff_items=due_payoff_items,
+                    )
+
+                    if not contract_check["passed"]:
+                        if attempt >= max_version_attempts:
+                            raise HTTPException(
+                                status_code=422,
+                                detail=(
+                                    f"第{request.chapter_number}章版本{idx + 1}连续{max_version_attempts}轮未满足硬约束："
+                                    f"outline_covered={contract_check.get('outline_covered', False)} "
+                                    f"missing_plants={len(contract_check.get('missing_plants', []))} "
+                                    f"missing_payoffs={len(contract_check.get('missing_payoffs', []))}"
+                                ),
+                            )
+                        attempt_feedback = contract_violations_text
+                        continue
+
+                def _extract_text(value: object) -> Optional[str]:
+                    if not value:
+                        return None
+                    if isinstance(value, str):
+                        return value
+                    if isinstance(value, dict):
+                        for key in ("content", "chapter_content", "chapter_text", "text", "body", "story"):
+                            if value.get(key):
+                                nested = _extract_text(value.get(key))
+                                if nested:
+                                    return nested
+                        return None
+                    if isinstance(value, list):
+                        for item in value:
+                            nested = _extract_text(item)
                             if nested:
                                 return nested
                     return None
-                if isinstance(value, list):
-                    for item in value:
-                        nested = _extract_text(item)
-                        if nested:
-                            return nested
-                return None
 
-            parsed_json = None
-            extracted_text = None
-            try:
-                parsed_json = json.loads(final_content)
-                extracted_text = _extract_text(parsed_json)
-            except Exception:
                 parsed_json = None
+                extracted_text = None
+                try:
+                    parsed_json = json.loads(final_content)
+                    extracted_text = _extract_text(parsed_json)
+                except Exception:
+                    parsed_json = None
 
-            return {
-                "content": extracted_text or final_content,
-                "parsed_json": parsed_json,
-                "guardrail": guardrail_metadata,
-                "foreshadowing_contract": {
-                    "outline_required": {
-                        "title": outline_title,
-                        "summary": outline_summary,
+                result_text = (extracted_text or final_content or "").strip()
+                if _is_tail_incomplete(result_text):
+                    logger.warning(
+                        "项目 %s 第 %s 章版本 %s 检测到尾句疑似中断，触发尾句补全",
+                        project_id,
+                        request.chapter_number,
+                        idx + 1,
+                    )
+                    result_text = await _complete_tail_sentence(
+                        llm_service=llm_service,
+                        text=result_text,
+                        user_id=current_user.id,
+                    )
+
+                return {
+                    "content": result_text,
+                    "parsed_json": parsed_json,
+                    "guardrail": guardrail_metadata,
+                    "foreshadowing_contract": {
+                        "outline_required": {
+                            "title": outline_title,
+                            "summary": outline_summary,
+                        },
+                        "required_plants": [
+                            {
+                                "id": item.get("id"),
+                                "name": item.get("name"),
+                                "chapter_number": item.get("chapter_number"),
+                                "content": item.get("content"),
+                            }
+                            for item in must_plant_items
+                        ],
+                        "required_payoffs": [
+                            {
+                                "id": item.get("id"),
+                                "name": item.get("name"),
+                                "planted_chapter": item.get("chapter_number"),
+                                "target_reveal_chapter": item.get("target_reveal_chapter"),
+                                "content": item.get("content"),
+                            }
+                            for item in due_payoff_items
+                        ],
+                        "passed": contract_check["passed"],
+                        "outline_covered": contract_check.get("outline_covered", False),
+                        "missing_outline_points": contract_check.get("missing_outline_points", []),
+                        "missing_plants": contract_check.get("missing_plants", []),
+                        "missing_payoffs": contract_check.get("missing_payoffs", []),
                     },
-                    "required_plants": [
-                        {
-                            "id": item.get("id"),
-                            "name": item.get("name"),
-                            "chapter_number": item.get("chapter_number"),
-                            "content": item.get("content"),
-                        }
-                        for item in must_plant_items
-                    ],
-                    "required_payoffs": [
-                        {
-                            "id": item.get("id"),
-                            "name": item.get("name"),
-                            "planted_chapter": item.get("chapter_number"),
-                            "target_reveal_chapter": item.get("target_reveal_chapter"),
-                            "content": item.get("content"),
-                        }
-                        for item in due_payoff_items
-                    ],
-                    "passed": contract_check["passed"],
-                    "outline_covered": contract_check.get("outline_covered", False),
-                    "missing_outline_points": contract_check.get("missing_outline_points", []),
-                    "missing_plants": contract_check.get("missing_plants", []),
-                    "missing_payoffs": contract_check.get("missing_payoffs", []),
-                },
-                "chapter_mission": chapter_mission,
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception(
-                "项目 %s 生成第 %s 章第 %s 个版本时发生异常: %s",
-                project_id,
-                request.chapter_number,
-                idx + 1,
-                exc,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"生成章节第 {idx + 1} 个版本时失败: {str(exc)[:200]}"
-            )
+                    "chapter_mission": chapter_mission,
+                }
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "项目 %s 生成第 %s 章第 %s 个版本第 %s 轮时发生异常: %s",
+                    project_id,
+                    request.chapter_number,
+                    idx + 1,
+                    attempt,
+                    exc,
+                )
+                if attempt >= max_version_attempts:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"生成章节第 {idx + 1} 个版本时失败: {str(exc)[:200]}"
+                    )
+                attempt_feedback = f"第{attempt}轮生成异常：{str(exc)[:200]}"
+                continue
+
+        raise HTTPException(status_code=500, detail=f"生成章节第 {idx + 1} 个版本失败：重试耗尽")
 
     version_count = await _resolve_version_count(session)
     logger.info(
@@ -1937,9 +2176,136 @@ async def evaluate_chapter(
         if not evaluation_text or len(evaluation_text.strip()) == 0:
             raise ValueError("评审结果为空")
 
+        # 组装“执行校验总结”（大纲覆盖 + 本章必埋 + 本章必收）
+        outline_title = f"第{request.chapter_number}章"
+        outline_summary = ""
+        if blueprint and blueprint.chapter_outline:
+            target_outline = next(
+                (o for o in blueprint.chapter_outline if o.chapter_number == request.chapter_number),
+                None,
+            )
+            if target_outline:
+                outline_title = target_outline.title or outline_title
+                outline_summary = target_outline.summary or ""
+
+        planted_stmt = (
+            select(Foreshadowing)
+            .where(
+                Foreshadowing.project_id == project_id,
+                Foreshadowing.chapter_number == request.chapter_number,
+                Foreshadowing.status != "abandoned",
+            )
+            .order_by(Foreshadowing.id)
+        )
+        planted_result = await session.execute(planted_stmt)
+        planted_for_current = planted_result.scalars().all()
+        must_plant_items: List[Dict[str, Any]] = []
+        seen_plant_contents = set()
+        for fs in planted_for_current:
+            content = str(fs.content or "").strip()
+            if not content or content in seen_plant_contents:
+                continue
+            seen_plant_contents.add(content)
+            must_plant_items.append(
+                {
+                    "id": fs.id,
+                    "name": fs.name,
+                    "content": content,
+                    "chapter_number": fs.chapter_number,
+                    "urgency": fs.urgency,
+                    "keywords": fs.keywords if isinstance(fs.keywords, list) else [],
+                }
+            )
+        must_plant_items = must_plant_items[:5]
+
+        foreshadowing_service = ForeshadowingService(session)
+        unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+            project_id=project_id,
+            current_chapter_number=request.chapter_number,
+        )
+        due_payoff_items: List[Dict[str, Any]] = []
+        overdue_escalation_chapters = max(1, int(settings.foreshadowing_overdue_escalation_chapters))
+        for fs in unresolved_foreshadowings:
+            target_chapter = fs.target_reveal_chapter
+            if target_chapter is None or target_chapter > request.chapter_number:
+                continue
+            overdue_chapters = max(0, request.chapter_number - target_chapter)
+            is_overdue_escalated = overdue_chapters >= overdue_escalation_chapters
+            due_payoff_items.append(
+                {
+                    "id": fs.id,
+                    "name": fs.name,
+                    "content": fs.content,
+                    "chapter_number": fs.chapter_number,
+                    "target_reveal_chapter": target_chapter,
+                    "urgency": fs.urgency,
+                    "overdue_chapters": overdue_chapters,
+                    "is_overdue_escalated": is_overdue_escalated,
+                    "keywords": fs.keywords if isinstance(fs.keywords, list) else [],
+                }
+            )
+        due_payoff_items.sort(
+            key=lambda item: (
+                -(1 if item.get("is_overdue_escalated") else 0),
+                item.get("target_reveal_chapter") if item.get("target_reveal_chapter") is not None else 10**9,
+                -(item.get("urgency") or 0),
+                item.get("chapter_number") or 0,
+            )
+        )
+        due_payoff_items = due_payoff_items[:3]
+
+        execution_summary: Dict[str, Any] = {
+            "outline": {"title": outline_title, "summary": outline_summary},
+            "required_plants": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "content": item.get("content"),
+                }
+                for item in must_plant_items
+            ],
+            "required_payoffs": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "content": item.get("content"),
+                    "target_reveal_chapter": item.get("target_reveal_chapter"),
+                }
+                for item in due_payoff_items
+            ],
+            "version_results": {},
+        }
+        for idx, version in enumerate(versions_to_evaluate, start=1):
+            check = await _check_chapter_execution_contract(
+                llm_service=llm_service,
+                user_id=current_user.id,
+                chapter_number=request.chapter_number,
+                generated_text=version.content or "",
+                outline_title=outline_title,
+                outline_summary=outline_summary,
+                must_plant_items=must_plant_items,
+                must_payoff_items=due_payoff_items,
+            )
+            execution_summary["version_results"][f"version{idx}"] = {
+                "passed": bool(check.get("passed", False)),
+                "outline_covered": bool(check.get("outline_covered", False)),
+                "missing_outline_points": check.get("missing_outline_points", []),
+                "missing_plants": [
+                    {"id": item.get("id"), "name": item.get("name"), "content": item.get("content")}
+                    for item in check.get("missing_plants", [])
+                ],
+                "missing_payoffs": [
+                    {"id": item.get("id"), "name": item.get("name"), "content": item.get("content")}
+                    for item in check.get("missing_payoffs", [])
+                ],
+            }
+
         # 解析评审结果以获取最佳版本索引
         try:
             evaluation_data = json.loads(evaluation_text)
+            if isinstance(evaluation_data, dict):
+                evaluation_data["execution_summary"] = execution_summary
+                evaluation_text = json.dumps(evaluation_data, ensure_ascii=False)
             best_choice = evaluation_data.get("best_choice", 1)
             # best_choice 是 1-based 索引
             best_version_index = best_choice - 1 if isinstance(best_choice, int) else 0
@@ -2204,6 +2570,46 @@ async def get_chapter_runtime_status(
 ) -> ChapterRuntimeStatus:
     novel_service = NovelService(session)
     return await novel_service.get_chapter_runtime_status(project_id, current_user.id, chapter_number)
+
+
+@router.get("/style-library", response_model=WritingStyleLibrary)
+async def get_writing_style_library(
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> WritingStyleLibrary:
+    style_rule_service = UserStyleRuleService(session)
+    outline_text = await style_rule_service.get_account_rule_text_by_type(
+        user_id=current_user.id,
+        rule_type="outline_generation",
+    )
+    chapter_text = await style_rule_service.get_account_rule_text_by_type(
+        user_id=current_user.id,
+        rule_type="chapter_writing",
+    )
+    return WritingStyleLibrary(outline_text=outline_text, chapter_text=chapter_text)
+
+
+@router.put("/style-library", response_model=WritingStyleLibrary)
+async def update_writing_style_library(
+    request: UpdateWritingStyleLibraryRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> WritingStyleLibrary:
+    style_rule_service = UserStyleRuleService(session)
+    outline_text = await style_rule_service.set_account_rule_text_by_type(
+        user_id=current_user.id,
+        rule_type="outline_generation",
+        content=request.outline_text,
+        source="style_library_manual",
+    )
+    chapter_text = await style_rule_service.set_account_rule_text_by_type(
+        user_id=current_user.id,
+        rule_type="chapter_writing",
+        content=request.chapter_text,
+        source="style_library_manual",
+    )
+
+    return WritingStyleLibrary(outline_text=outline_text, chapter_text=chapter_text)
 
 
 @router.post("/novels/{project_id}/chapters/outline", response_model=NovelProjectSchema)

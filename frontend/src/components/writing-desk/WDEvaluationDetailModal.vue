@@ -29,6 +29,41 @@
               <p class="md-title-small font-semibold" style="color: var(--md-on-secondary-container);">🏆 最佳选择：版本 {{ parsedEvaluation.best_choice }}</p>
               <p class="md-body-small mt-2" style="color: var(--md-on-secondary-container);">{{ parsedEvaluation.reason_for_choice }}</p>
             </div>
+            <div
+              v-if="parsedEvaluation.execution_summary && parsedEvaluation.execution_summary.version_results"
+              class="md-card md-card-outlined p-4"
+              style="border-radius: var(--md-radius-lg);"
+            >
+              <h5 class="md-title-medium font-semibold mb-3">大纲与伏笔执行校验总结</h5>
+              <div class="space-y-3">
+                <div
+                  v-for="(check, versionName) in parsedEvaluation.execution_summary.version_results"
+                  :key="`check-${versionName}`"
+                  class="p-3 rounded-lg"
+                  style="background-color: var(--md-surface-container-low);"
+                >
+                  <p class="font-semibold mb-1">
+                    版本 {{ String(versionName).replace('version', '') }}
+                    <span v-if="check.passed" style="color: var(--md-success);">（已覆盖）</span>
+                    <span v-else style="color: var(--md-error);">（未完全覆盖）</span>
+                  </p>
+                  <p class="md-body-small">
+                    大纲覆盖：{{ check.outline_covered ? '是' : '否' }}
+                    ｜ 缺失必埋：{{ check.missing_plants?.length || 0 }}
+                    ｜ 缺失必收：{{ check.missing_payoffs?.length || 0 }}
+                  </p>
+                  <p v-if="check.missing_outline_points?.length" class="md-body-small mt-1">
+                    大纲缺失点：{{ check.missing_outline_points.join('；') }}
+                  </p>
+                  <p v-if="check.missing_plants?.length" class="md-body-small mt-1">
+                    未覆盖必埋：{{ formatMissingItems(check.missing_plants) }}
+                  </p>
+                  <p v-if="check.missing_payoffs?.length" class="md-body-small mt-1">
+                    未覆盖必收：{{ formatMissingItems(check.missing_payoffs) }}
+                  </p>
+                </div>
+              </div>
+            </div>
             <div class="space-y-4">
               <div v-for="(evalResult, versionName) in parsedEvaluation.evaluation" :key="versionName" class="md-card md-card-outlined p-4" style="border-radius: var(--md-radius-lg);">
                 <h5 class="md-title-medium font-semibold mb-2">版本 {{ String(versionName).replace('version', '') }} 评估</h5>
@@ -196,6 +231,17 @@ const parseMarkdown = (text: string | null): string => {
     parsed = `<p>${parsed}</p>`
   }
   return parsed
+}
+
+const formatMissingItems = (items: Array<{ id?: number; name?: string; content?: string }> = []): string => {
+  if (!items.length) return '无'
+  return items
+    .map((item) => {
+      const label = item.name?.trim() || (item.id ? `#${item.id}` : '未命名')
+      const content = (item.content || '').trim()
+      return content ? `${label}（${content}）` : label
+    })
+    .join('；')
 }
 </script>
 

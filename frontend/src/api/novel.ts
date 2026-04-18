@@ -135,6 +135,11 @@ export interface ChapterRuntimeStatus {
   selected_version_id: number | null
 }
 
+export interface WritingStyleLibrary {
+  outline_text: string
+  chapter_text: string
+}
+
 export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
@@ -359,6 +364,7 @@ export interface NovelSectionResponse {
 const NOVELS_BASE = `${API_BASE_URL}${API_PREFIX}/novels`
 const PROJECTS_BASE = `${API_BASE_URL}${API_PREFIX}/projects`
 const WRITER_PREFIX = '/api/writer'
+const WRITER_API_BASE = `${API_BASE_URL}${WRITER_PREFIX}`
 const WRITER_BASE = `${API_BASE_URL}${WRITER_PREFIX}/novels`
 
 export class NovelAPI {
@@ -394,6 +400,23 @@ export class NovelAPI {
     chapterNumber: number
   ): Promise<ChapterRuntimeStatus> {
     return request(`${WRITER_BASE}/${projectId}/chapters/${chapterNumber}/status`)
+  }
+
+  static async getWritingStyleLibrary(): Promise<WritingStyleLibrary> {
+    return request(`${WRITER_API_BASE}/style-library`)
+  }
+
+  static async updateWritingStyleLibrary(
+    outlineText: string,
+    chapterText: string
+  ): Promise<WritingStyleLibrary> {
+    return request(`${WRITER_API_BASE}/style-library`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        outline_text: outlineText,
+        chapter_text: chapterText
+      })
+    })
   }
 
   static async getSection(projectId: string, section: NovelSectionType): Promise<NovelSectionResponse> {

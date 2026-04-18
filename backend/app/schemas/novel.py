@@ -73,6 +73,16 @@ class ChapterRuntimeStatus(BaseModel):
     selected_version_id: Optional[int] = None
 
 
+class WritingStyleLibrary(BaseModel):
+    outline_text: str = Field(default="", description="大纲写作风格文本")
+    chapter_text: str = Field(default="", description="章节写作风格文本")
+
+
+class UpdateWritingStyleLibraryRequest(BaseModel):
+    outline_text: str = Field(default="", description="大纲风格文本（按行分隔）")
+    chapter_text: str = Field(default="", description="章节风格文本（按行分隔）")
+
+
 class Relationship(BaseModel):
     character_from: str
     character_to: str

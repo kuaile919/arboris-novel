@@ -25,6 +25,7 @@ from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
+from ...services.user_style_rule_service import UserStyleRuleService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 
 router = APIRouter(prefix="/api/optimizer", tags=["Optimizer"])
@@ -1150,6 +1151,24 @@ async def append_writing_style(
             "用户 %s 追加了 %s 维度的写作风格到 writing_v2.md",
             current_user.id,
             dimension_name
+        )
+
+        # 同步入库到账号级「章节写作风格」（整体保存）
+        style_rule_service = UserStyleRuleService(session)
+        existing_chapter_style = await style_rule_service.get_account_rule_text_by_type(
+            user_id=current_user.id,
+            rule_type="chapter_writing",
+        )
+        merged_chapter_style = (
+            f"{existing_chapter_style}\n{cleaned_summary}".strip()
+            if existing_chapter_style
+            else cleaned_summary
+        )
+        await style_rule_service.set_account_rule_text_by_type(
+            user_id=current_user.id,
+            rule_type="chapter_writing",
+            content=merged_chapter_style,
+            source="optimizer_append_style",
         )
 
         return {
