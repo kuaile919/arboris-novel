@@ -687,7 +687,7 @@ async def _rewrite_with_guardrails(
     user_id: int,
     min_chars: Optional[int] = None,
     max_chars: Optional[int] = None,
-    max_tokens: int = 2200,
+    max_tokens: int = 4096,
 ) -> str:
     """
     使用护栏修复提示词重写违规内容
@@ -1120,9 +1120,9 @@ async def generate_chapter(
     context_builder = WriterContextBuilder()
     guardrails = ChapterGuardrails()
     style_rule_service = UserStyleRuleService(session)
-    chapter_min_chars = 2400
-    chapter_target_max_chars = 3000
-    chapter_hard_max_chars = 3000
+    chapter_min_chars = 3500
+    chapter_target_max_chars = 4300
+    chapter_hard_max_chars = 4500
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("用户 %s 开始为项目 %s 生成第 %s 章", current_user.id, project_id, request.chapter_number)
@@ -1598,7 +1598,7 @@ async def generate_chapter(
         ("[用户个人风格规则](优先约束)", personal_rules_compact),
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
         ("[禁止角色](本章不允许提及)", forbidden_text),
-        ("[字数要求]", "本章节正文字数必须控制在 2400-3000 字，3000 字是硬上限。请在心里将全章分为「开场(约600字)→发展(约1100字)→转折(约800字)→钩子(约300字)」四段，累计到约 2700 字时主动进入钩子收尾。注意：这只是心理规划，绝对不要在正文中写出「**【开场】**」「**【发展】**」等结构标记。"),
+        ("[字数要求]", "本章节正文字数必须控制在 3500-4500 字，4500 字是硬上限。请在心里将全章分为「开场(约800字)→发展(约1500字)→转折(约1200字)→钩子(约500字)」四段，累计到约 3900 字时主动进入钩子收尾。注意：这只是心理规划，绝对不要在正文中写出「**【开场】**」「**【发展】**」等结构标记。"),
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug(
@@ -1622,7 +1622,7 @@ async def generate_chapter(
                     final_prompt_input += f"\n\n[版本风格提示]\n{version_style_hint}"
 
                 generation_temperature = 0.78 if attempt == 1 else 0.72
-                generation_max_tokens = 3200
+                generation_max_tokens = 4096
                 try:
                     response = await llm_service.get_llm_response(
                         system_prompt=writer_prompt,
@@ -1650,7 +1650,7 @@ async def generate_chapter(
                             user_id=current_user.id,
                             timeout=600.0,
                             response_format=None,
-                            max_tokens=3800,
+                            max_tokens=4096,
                         )
                     else:
                         raise
@@ -1692,7 +1692,7 @@ async def generate_chapter(
                         user_id=current_user.id,
                         min_chars=chapter_min_chars,
                         max_chars=chapter_hard_max_chars,
-                        max_tokens=3200,
+                        max_tokens=4096,
                     )
 
                 # ========== 8. 章节执行硬约束检查（大纲 + 埋 + 收） ==========

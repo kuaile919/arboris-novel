@@ -123,13 +123,14 @@ class AIReviewService:
             lines.append("")
 
         lines.append("[待评审版本]")
+        review_truncate_chars = 4500
         for i, content in enumerate(versions):
             lines.append(f"--- 版本 {i} ---")
-            # 截取前 3000 字，避免超长
-            truncated = content[:3000] if len(content) > 3000 else content
+            # 截取前 4500 字，避免超长且保留更多关键情节用于评审
+            truncated = content[:review_truncate_chars] if len(content) > review_truncate_chars else content
             lines.append(truncated)
-            if len(content) > 3000:
-                lines.append(f"... (已截取前 3000 字，原文共 {len(content)} 字)")
+            if len(content) > review_truncate_chars:
+                lines.append(f"... (已截取前 {review_truncate_chars} 字，原文共 {len(content)} 字)")
             lines.append("")
 
         lines.append("[评审要求]")
