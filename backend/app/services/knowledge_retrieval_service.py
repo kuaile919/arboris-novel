@@ -215,6 +215,7 @@ class KnowledgeRetrievalService:
             queries=queries,
             top_k=top_k,
             user_id=user_id,
+            chapter_number=chapter_number,
         )
         
         # 4. 获取前文摘要
@@ -433,6 +434,7 @@ class KnowledgeRetrievalService:
         queries: List[str],
         top_k: int,
         user_id: int,
+        chapter_number: Optional[int] = None,
     ) -> List[RetrievedKnowledge]:
         """从向量库检索"""
         if not self.vector_store_service or not queries:
@@ -442,11 +444,19 @@ class KnowledgeRetrievalService:
         for query in queries:
             try:
                 if hasattr(self.vector_store_service, "search"):
-                    results = await self.vector_store_service.search(
-                        project_id=project_id,
-                        query=query,
-                        top_k=top_k
-                    )
+                    try:
+                        results = await self.vector_store_service.search(
+                            project_id=project_id,
+                            query=query,
+                            top_k=top_k,
+                            max_chapter_exclusive=chapter_number,
+                        )
+                    except TypeError:
+                        results = await self.vector_store_service.search(
+                            project_id=project_id,
+                            query=query,
+                            top_k=top_k
+                        )
                 else:
                     embedding = await self.llm_service.get_embedding(query, user_id=user_id)
                     if not embedding:
@@ -455,6 +465,7 @@ class KnowledgeRetrievalService:
                         project_id=project_id,
                         embedding=embedding,
                         top_k=top_k,
+                        max_chapter_exclusive=chapter_number,
                     )
                     results = [
                         {

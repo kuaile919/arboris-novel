@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     app_name: str = Field(default="AI Novel Generator API", description="FastAPI 文档标题")
     environment: str = Field(default="development", description="当前环境标识")
     debug: bool = Field(default=True, description="是否开启调试模式")
+    sql_echo: bool = Field(
+        default=False,
+        env="SQL_ECHO",
+        description="是否输出 SQLAlchemy 原始 SQL 日志",
+    )
     allow_registration: bool = Field(
         default=True,
         env="ALLOW_USER_REGISTRATION",
@@ -215,6 +220,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WRITER_CHAPTER_VERSION_COUNT", "WRITER_CHAPTER_VERSIONS"),
         description="每次生成章节的候选版本数量",
     )
+    foreshadowing_overdue_escalation_chapters: int = Field(
+        default=2,
+        ge=1,
+        env="FORESHADOWING_OVERDUE_ESCALATION_CHAPTERS",
+        description="伏笔在到期后连续多少章未回收时自动升优先级",
+    )
 
     # -------------------- Embedding 配置 --------------------
     embedding_provider: str = Field(
@@ -348,6 +359,21 @@ class Settings(BaseSettings):
             if candidate in {"0", "false", "no", "off", "release", "production"}:
                 return False
         return bool(value) if value is not None else True
+
+    @validator("sql_echo", pre=True)
+    def _normalize_sql_echo(cls, value: object) -> bool:
+        """兼容 SQL_ECHO 的字符串布尔值。"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            candidate = value.strip().lower()
+            if candidate in {"1", "true", "yes", "on", "debug", "development"}:
+                return True
+            if candidate in {"0", "false", "no", "off", "release", "production"}:
+                return False
+        return bool(value) if value is not None else False
 
     @validator("llm_provider", pre=True)
     def _normalize_llm_provider(cls, value: Optional[str]) -> str:

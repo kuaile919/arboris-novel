@@ -98,7 +98,8 @@ class VectorStoreServiceExt(VectorStoreService):
         self,
         project_id: str,
         query: str,
-        top_k: int = 5
+        top_k: int = 5,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         基于文本查询进行向量检索
@@ -125,7 +126,8 @@ class VectorStoreServiceExt(VectorStoreService):
             chunks = await self.query_chunks(
                 project_id=project_id,
                 embedding=query_embedding,
-                top_k=top_k
+                top_k=top_k,
+                max_chapter_exclusive=max_chapter_exclusive,
             )
             
             # 转换为字典格式
@@ -148,7 +150,8 @@ class VectorStoreServiceExt(VectorStoreService):
         self,
         project_id: str,
         query: str,
-        top_k: int = 3
+        top_k: int = 3,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         基于文本查询检索章节摘要
@@ -173,7 +176,8 @@ class VectorStoreServiceExt(VectorStoreService):
             summaries = await self.query_summaries(
                 project_id=project_id,
                 embedding=query_embedding,
-                top_k=top_k
+                top_k=top_k,
+                max_chapter_exclusive=max_chapter_exclusive,
             )
             
             return [

@@ -151,11 +151,19 @@ class ForeshadowingService:
             and_(
                 Foreshadowing.project_id == project_id,
                 Foreshadowing.status.in_(["planted", "developing", "open"]),
+                Foreshadowing.chapter_number < current_chapter_number,
             )
         ).order_by(Foreshadowing.chapter_number)
         
         result = await self.session.execute(query)
-        return result.scalars().all()
+        foreshadowings = result.scalars().all()
+        logger.debug(
+            "获取未回收伏笔: project=%s current_chapter=%s count=%s",
+            project_id,
+            current_chapter_number,
+            len(foreshadowings),
+        )
+        return foreshadowings
     
     async def create_reminder(
         self,

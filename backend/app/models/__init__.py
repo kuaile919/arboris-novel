@@ -19,6 +19,7 @@ from .update_log import UpdateLog
 from .usage_metric import UsageMetric
 from .user import User
 from .user_daily_request import UserDailyRequest
+from .user_style_rule import UserStyleRule
 from .system_config import SystemConfig
 
 # 新增：项目记忆模型
@@ -77,6 +78,7 @@ __all__ = [
     "UsageMetric",
     "User",
     "UserDailyRequest",
+    "UserStyleRule",
     "SystemConfig",
     # 项目记忆模型
     "ProjectMemory",

@@ -62,6 +62,17 @@ class Chapter(ChapterOutline):
     generation_status: ChapterGenerationStatus = ChapterGenerationStatus.NOT_GENERATED
 
 
+class ChapterRuntimeStatus(BaseModel):
+    chapter_number: int
+    generation_status: ChapterGenerationStatus = ChapterGenerationStatus.NOT_GENERATED
+    word_count: int = 0
+    updated_at: Optional[str] = None
+    has_content: bool = False
+    versions_count: int = 0
+    has_evaluation: bool = False
+    selected_version_id: Optional[int] = None
+
+
 class Relationship(BaseModel):
     character_from: str
     character_to: str

@@ -128,6 +128,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
+import { NovelAPI } from '@/api/novel'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject, OutlinePreviewResponse } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
@@ -390,7 +391,41 @@ const fetchChapterStatus = async () => {
     return
   }
   try {
-    await novelStore.loadChapter(selectedChapterNumber.value)
+    if (!project.value) {
+      return
+    }
+    const chapterNumber = selectedChapterNumber.value
+    const status = await NovelAPI.getChapterRuntimeStatus(project.value.id, chapterNumber)
+
+    const chapters = project.value.chapters || []
+    let chapter = chapters.find(ch => ch.chapter_number === chapterNumber)
+    const previousStatus = chapter?.generation_status
+
+    if (!chapter) {
+      const outline = project.value.blueprint?.chapter_outline?.find(o => o.chapter_number === chapterNumber)
+      chapter = {
+        chapter_number: chapterNumber,
+        title: outline?.title || `第${chapterNumber}章`,
+        summary: outline?.summary || '',
+        content: null,
+        versions: null,
+        evaluation: null,
+        generation_status: status.generation_status,
+        word_count: status.word_count
+      } as Chapter
+      chapters.push(chapter)
+    } else {
+      chapter.generation_status = status.generation_status
+      chapter.word_count = status.word_count
+    }
+
+    const inProgress = ['generating', 'evaluating', 'selecting']
+    const wasInProgress = previousStatus ? inProgress.includes(previousStatus) : false
+    const isInProgress = inProgress.includes(status.generation_status)
+    if (wasInProgress && !isInProgress) {
+      await novelStore.loadChapter(chapterNumber)
+    }
+
     console.log('Chapter status polled and updated.')
   } catch (error) {
     console.error('轮询章节状态失败:', error)

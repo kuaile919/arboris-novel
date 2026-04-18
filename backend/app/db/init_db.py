@@ -1,10 +1,11 @@
 # AIMETA P=数据库初始化_创建表和默认数据|R=创建表_初始化管理员|NR=不含业务逻辑|E=init_db|X=internal|A=初始化函数|D=sqlalchemy|S=db|RD=./README.ai
 import logging
+import asyncio
 
 from pathlib import Path
 
 from sqlalchemy import inspect, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -23,7 +24,27 @@ logger = logging.getLogger(__name__)
 
 async def init_db() -> None:
     """初始化数据库结构并确保默认管理员存在。"""
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await _init_db_once()
+            return
+        except SQLAlchemyError as exc:
+            if attempt >= max_attempts:
+                logger.exception("数据库初始化失败，重试已耗尽: attempt=%s/%s", attempt, max_attempts)
+                raise
+            wait_seconds = min(2 * attempt, 10)
+            logger.warning(
+                "数据库初始化失败，准备重试: attempt=%s/%s wait=%ss error=%s",
+                attempt,
+                max_attempts,
+                wait_seconds,
+                exc,
+            )
+            await asyncio.sleep(wait_seconds)
 
+
+async def _init_db_once() -> None:
     await _ensure_database_exists()
 
     # ---- 第一步：创建所有表结构 ----
@@ -247,6 +268,8 @@ async def _ensure_schema_updates() -> None:
 
     # 迁移旧 world_setting JSON 数据到新表
     await _migrate_world_setting_to_tables()
+    # 清理 world_setting 中遗留的旧地点键，统一为 key_locations 表承载
+    await _cleanup_legacy_world_setting_entity_keys()
 
 
 async def _migrate_world_setting_to_tables() -> None:
@@ -320,6 +343,50 @@ async def _migrate_world_setting_to_tables() -> None:
         await session.commit()
         if migrated_loc or migrated_fac:
             logger.info(f"[Migration] world_setting 数据迁移完成: +{migrated_loc} 地点, +{migrated_fac} 阵营")
+
+
+async def _cleanup_legacy_world_setting_entity_keys() -> None:
+    """
+    清理 novel_blueprints.world_setting 中的历史实体键：
+    - locations
+    - location
+    - key_locations
+    - factions
+
+    注意：该步骤应在 _migrate_world_setting_to_tables 之后执行，避免数据丢失。
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(NovelBlueprint))
+        blueprints = list(result.scalars().all())
+
+        updated = 0
+        for bp in blueprints:
+            ws = bp.world_setting
+            if not isinstance(ws, dict):
+                continue
+
+            if (
+                "locations" not in ws
+                and "location" not in ws
+                and "key_locations" not in ws
+                and "factions" not in ws
+            ):
+                continue
+
+            cleaned = dict(ws)
+            cleaned.pop("locations", None)
+            cleaned.pop("location", None)
+            cleaned.pop("key_locations", None)
+            cleaned.pop("factions", None)
+            bp.world_setting = cleaned
+            updated += 1
+
+        if updated:
+            await session.commit()
+            logger.info(
+                "[Migration] 已清理 world_setting 实体遗留键(locations/location/key_locations/factions): %s 个项目",
+                updated,
+            )
 
 
 async def _ensure_default_prompts(session: AsyncSession) -> None:

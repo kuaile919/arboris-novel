@@ -66,6 +66,7 @@ class ChapterContextService:
         user_id: int,
         top_k_chunks: Optional[int] = None,
         top_k_summaries: Optional[int] = None,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> ChapterRAGContext:
         """根据章节摘要构造检索向量，并返回 RAG 上下文。"""
         query = self._normalize(query_text)
@@ -83,11 +84,13 @@ class ChapterContextService:
             project_id=project_id,
             embedding=embedding,
             top_k=top_k_chunks,
+            max_chapter_exclusive=max_chapter_exclusive,
         )
         summaries = await self._vector_store.query_summaries(
             project_id=project_id,
             embedding=embedding,
             top_k=top_k_summaries,
+            max_chapter_exclusive=max_chapter_exclusive,
         )
         logger.info(
             "章节上下文检索完成: project=%s chunks=%d summaries=%d query_preview=%s",

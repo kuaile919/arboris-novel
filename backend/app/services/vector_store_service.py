@@ -136,6 +136,7 @@ class VectorStoreService:
         project_id: str,
         embedding: Sequence[float],
         top_k: Optional[int] = None,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> List[RetrievedChunk]:
         """根据查询向量检索剧情片段，结果已按相似度排序。"""
         if not self._client or not embedding:
@@ -148,26 +149,32 @@ class VectorStoreService:
         fetch_limit = top_k + 20
 
         blob = self._to_f32_blob(embedding)
-        sql = """
+        chapter_filter_sql = ""
+        params: Dict[str, Any] = {
+            "project_id": project_id,
+            "query": blob,
+            "limit": fetch_limit,
+        }
+        if max_chapter_exclusive is not None:
+            chapter_filter_sql = " AND chapter_number < :max_chapter_exclusive"
+            params["max_chapter_exclusive"] = max_chapter_exclusive
+
+        sql = f"""
         SELECT
             content,
             chapter_number,
             chapter_title,
-            COALESCE(metadata, '{}') AS metadata,
+            COALESCE(metadata, '{{}}') AS metadata,
             vector_distance_cosine(embedding, :query) AS distance
         FROM rag_chunks
-        WHERE project_id = :project_id
+        WHERE project_id = :project_id{chapter_filter_sql}
         ORDER BY distance ASC
         LIMIT :limit
         """
         try:
             result = await self._client.execute(  # type: ignore[union-attr]
                 sql,
-                {
-                    "project_id": project_id,
-                    "query": blob,
-                    "limit": fetch_limit,
-                },
+                params,
             )
         except Exception as exc:  # pragma: no cover - 查询异常时仅记录
             if "no such function: vector_distance_cosine" in str(exc).lower():
@@ -176,6 +183,7 @@ class VectorStoreService:
                     project_id=project_id,
                     embedding=embedding,
                     top_k=top_k,
+                    max_chapter_exclusive=max_chapter_exclusive,
                 )
             logger.warning("向量检索剧情片段失败: %s", exc)
             return []
@@ -202,6 +210,7 @@ class VectorStoreService:
         project_id: str,
         embedding: Sequence[float],
         top_k: Optional[int] = None,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> List[RetrievedSummary]:
         """根据查询向量检索章节摘要列表。"""
         if not self._client or not embedding:
@@ -213,25 +222,31 @@ class VectorStoreService:
             return []
 
         blob = self._to_f32_blob(embedding)
-        sql = """
+        chapter_filter_sql = ""
+        params: Dict[str, Any] = {
+            "project_id": project_id,
+            "query": blob,
+            "limit": top_k,
+        }
+        if max_chapter_exclusive is not None:
+            chapter_filter_sql = " AND chapter_number < :max_chapter_exclusive"
+            params["max_chapter_exclusive"] = max_chapter_exclusive
+
+        sql = f"""
         SELECT
             chapter_number,
             title,
             summary,
             vector_distance_cosine(embedding, :query) AS distance
         FROM rag_summaries
-        WHERE project_id = :project_id
+        WHERE project_id = :project_id{chapter_filter_sql}
         ORDER BY distance ASC
         LIMIT :limit
         """
         try:
             result = await self._client.execute(  # type: ignore[union-attr]
                 sql,
-                {
-                    "project_id": project_id,
-                    "query": blob,
-                    "limit": top_k,
-                },
+                params,
             )
         except Exception as exc:  # pragma: no cover - 查询异常时仅记录
             if "no such function: vector_distance_cosine" in str(exc).lower():
@@ -240,6 +255,7 @@ class VectorStoreService:
                     project_id=project_id,
                     embedding=embedding,
                     top_k=top_k,
+                    max_chapter_exclusive=max_chapter_exclusive,
                 )
             logger.warning("向量检索章节摘要失败: %s", exc)
             return []
@@ -443,18 +459,25 @@ class VectorStoreService:
         project_id: str,
         embedding: Sequence[float],
         top_k: int,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> List[RetrievedChunk]:
-        sql = """
+        chapter_filter_sql = ""
+        params: Dict[str, Any] = {"project_id": project_id}
+        if max_chapter_exclusive is not None:
+            chapter_filter_sql = " AND chapter_number < :max_chapter_exclusive"
+            params["max_chapter_exclusive"] = max_chapter_exclusive
+
+        sql = f"""
         SELECT
             content,
             chapter_number,
             chapter_title,
-            COALESCE(metadata, '{}') AS metadata,
+            COALESCE(metadata, '{{}}') AS metadata,
             embedding
         FROM rag_chunks
-        WHERE project_id = :project_id
+        WHERE project_id = :project_id{chapter_filter_sql}
         """
-        result = await self._client.execute(sql, {"project_id": project_id})  # type: ignore[union-attr]
+        result = await self._client.execute(sql, params)  # type: ignore[union-attr]
         scored: List[RetrievedChunk] = []
         for row in self._iter_rows(result):
             metadata = self._parse_metadata(row.get("metadata"))
@@ -480,17 +503,24 @@ class VectorStoreService:
         project_id: str,
         embedding: Sequence[float],
         top_k: int,
+        max_chapter_exclusive: Optional[int] = None,
     ) -> List[RetrievedSummary]:
-        sql = """
+        chapter_filter_sql = ""
+        params: Dict[str, Any] = {"project_id": project_id}
+        if max_chapter_exclusive is not None:
+            chapter_filter_sql = " AND chapter_number < :max_chapter_exclusive"
+            params["max_chapter_exclusive"] = max_chapter_exclusive
+
+        sql = f"""
         SELECT
             chapter_number,
             title,
             summary,
             embedding
         FROM rag_summaries
-        WHERE project_id = :project_id
+        WHERE project_id = :project_id{chapter_filter_sql}
         """
-        result = await self._client.execute(sql, {"project_id": project_id})  # type: ignore[union-attr]
+        result = await self._client.execute(sql, params)  # type: ignore[union-attr]
         scored: List[RetrievedSummary] = []
         for row in self._iter_rows(result):
             stored_embedding = self._from_f32_blob(row.get("embedding"))

@@ -180,6 +180,7 @@ class PipelineOrchestrator:
             else:
                 rag_context = await self._get_rag_context(
                     project_id=project_id,
+                    chapter_number=chapter_number,
                     outline_title=outline_title,
                     outline_summary=outline_summary,
                     writing_notes=writing_notes,
@@ -557,6 +558,7 @@ class PipelineOrchestrator:
         self,
         *,
         project_id: str,
+        chapter_number: int,
         outline_title: str,
         outline_summary: str,
         writing_notes: str,
@@ -581,6 +583,7 @@ class PipelineOrchestrator:
             project_id=project_id,
             query_text=rag_query or outline_title or outline_summary,
             user_id=user_id,
+            max_chapter_exclusive=chapter_number,
         )
         return {
             "chunks": rag_context.chunk_texts() if rag_context.chunks else [],

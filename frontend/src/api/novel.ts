@@ -124,6 +124,17 @@ export interface Chapter {
   word_count?: number  // 字数统计
 }
 
+export interface ChapterRuntimeStatus {
+  chapter_number: number
+  generation_status: Chapter['generation_status']
+  word_count: number
+  updated_at: string | null
+  has_content: boolean
+  versions_count: number
+  has_evaluation: boolean
+  selected_version_id: number | null
+}
+
 export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
@@ -376,6 +387,13 @@ export class NovelAPI {
 
   static async getChapter(projectId: string, chapterNumber: number): Promise<Chapter> {
     return request(`${NOVELS_BASE}/${projectId}/chapters/${chapterNumber}`)
+  }
+
+  static async getChapterRuntimeStatus(
+    projectId: string,
+    chapterNumber: number
+  ): Promise<ChapterRuntimeStatus> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/${chapterNumber}/status`)
   }
 
   static async getSection(projectId: string, section: NovelSectionType): Promise<NovelSectionResponse> {

@@ -7,6 +7,7 @@ import os
 from dataclasses import asdict, dataclass
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union
 
+import httpx
 from openai import AsyncOpenAI
 
 from ..core.config import settings
@@ -165,7 +166,7 @@ class LLMClient:
         logger.debug("[LLMClient] request_params=%s", request_params)
 
         retryable_status_codes = {429, 500, 502, 503, 504}
-        max_retries = 2
+        max_retries = 3
 
         for attempt in range(1, max_retries + 1):
             emitted_content = False
@@ -184,7 +185,16 @@ class LLMClient:
                 status_code = getattr(e, "status_code", None)
                 text_payload = str(e)
                 inferred_500 = status_code is None and "'code': '500'" in text_payload
-                retryable = status_code in retryable_status_codes or inferred_500
+                retryable_network = isinstance(
+                    e,
+                    (
+                        httpx.TransportError,
+                        httpx.TimeoutException,
+                        ConnectionError,
+                        TimeoutError,
+                    ),
+                )
+                retryable = status_code in retryable_status_codes or inferred_500 or retryable_network
 
                 if emitted_content or not retryable or attempt >= max_retries:
                     logger.error("[LLMClient] _stream_anthropic 异常: %s, type=%s", text_payload, type(e).__name__)
@@ -193,10 +203,11 @@ class LLMClient:
 
                 wait_seconds = attempt
                 logger.warning(
-                    "[LLMClient] _stream_anthropic 临时错误，准备重试: attempt=%d/%d status=%s wait=%ss error=%s",
+                    "[LLMClient] _stream_anthropic 临时错误，准备重试: attempt=%d/%d status=%s network_retry=%s wait=%ss error=%s",
                     attempt,
                     max_retries,
                     status_code,
+                    retryable_network,
                     wait_seconds,
                     text_payload,
                 )

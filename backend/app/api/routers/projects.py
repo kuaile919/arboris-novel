@@ -290,7 +290,7 @@ async def sync_world_setting(
     current_user: UserInDB = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    从章节大纲和摘要中同步关键地点和主要阵营到 world_setting
+    从章节大纲和摘要中同步关键地点和主要阵营到独立表（key_locations / factions）
 
     Returns:
         new_locations: 新增的地点列表

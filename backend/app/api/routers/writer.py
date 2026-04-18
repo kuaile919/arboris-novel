@@ -16,7 +16,8 @@ import asyncio
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
@@ -26,10 +27,12 @@ from sqlalchemy.orm import selectinload
 from ...core.config import settings
 from ...core.dependencies import get_current_user
 from ...db.session import AsyncSessionLocal, get_session
+from ...models.foreshadowing import Foreshadowing
 from ...models.novel import Chapter, ChapterOutline, ChapterVersion
 from ...schemas.novel import (
     Chapter as ChapterSchema,
     ChapterGenerationStatus,
+    ChapterRuntimeStatus,
     AdvancedGenerateRequest,
     AdvancedGenerateResponse,
     DeleteChapterRequest,
@@ -61,6 +64,9 @@ from ...services.chapter_guardrails import ChapterGuardrails
 from ...services.ai_review_service import AIReviewService
 from ...services.finalize_service import FinalizeService
 from ...services.foreshadowing_service import ForeshadowingService
+from ...services.user_style_rule_service import UserStyleRuleService
+from ...services.key_location_service import KeyLocationService
+from ...services.faction_service import FactionService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json, sanitize_json_like_text
 from ...repositories.system_config_repository import SystemConfigRepository
 from ...services.pipeline_orchestrator import PipelineOrchestrator
@@ -73,6 +79,13 @@ async def _load_project_schema(service: NovelService, project_id: str, user_id: 
     return await service.get_project_schema(project_id, user_id)
 
 
+def _format_personal_rules_section(rules: List[str]) -> str:
+    if not rules:
+        return "无"
+    lines = [f"- {rule}" for rule in rules]
+    return "\n".join(lines)
+
+
 def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
     """截取章节结尾文本，默认保留 500 字。"""
     if not text:
@@ -81,6 +94,358 @@ def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+def _collect_foreshadowing_terms(item: Dict[str, Any]) -> List[str]:
+    """提取用于粗匹配的伏笔关键词。"""
+    terms: List[str] = []
+
+    keywords = item.get("keywords") or []
+    if isinstance(keywords, list):
+        for kw in keywords:
+            if isinstance(kw, str):
+                normalized = kw.strip()
+                if len(normalized) >= 2:
+                    terms.append(normalized)
+
+    content = str(item.get("content") or "").strip()
+    if content:
+        parts = [seg.strip() for seg in re.split(r"[，。！？；、,.;:：\s]+", content) if seg and len(seg.strip()) >= 2]
+        parts.sort(key=len, reverse=True)
+        terms.extend(parts[:3])
+
+    # 去重，保持顺序
+    deduped: List[str] = []
+    seen = set()
+    for term in terms:
+        if term not in seen:
+            seen.add(term)
+            deduped.append(term)
+    return deduped
+
+
+def _check_foreshadowing_contract(generated_text: str, must_payoff_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    伏笔执行检查（轻量规则版）：
+    - 对每个“本章必须回收”的伏笔，检查正文是否至少出现一个核心关键词。
+    """
+    if not must_payoff_items:
+        return {"passed": True, "missing": []}
+
+    text = generated_text or ""
+    missing: List[Dict[str, Any]] = []
+    for item in must_payoff_items:
+        terms = _collect_foreshadowing_terms(item)
+        matched = any(term in text for term in terms) if terms else False
+        if not matched:
+            missing.append(
+                {
+                    "id": item.get("id"),
+                    "content": item.get("content"),
+                    "terms": terms,
+                }
+            )
+
+    return {"passed": len(missing) == 0, "missing": missing}
+
+
+async def _check_chapter_execution_contract(
+    *,
+    llm_service: LLMService,
+    user_id: int,
+    chapter_number: int,
+    generated_text: str,
+    outline_title: str,
+    outline_summary: str,
+    must_plant_items: List[Dict[str, Any]],
+    must_payoff_items: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    章节执行硬约束检查（大纲目标 + 本章埋伏笔 + 本章收伏笔）。
+    使用 LLM 做语义判定，避免纯关键词匹配误判。
+    """
+    if not generated_text.strip():
+        return {
+            "passed": False,
+            "outline_covered": False,
+            "missing_outline_points": ["正文为空"],
+            "missing_plants": must_plant_items,
+            "missing_payoffs": must_payoff_items,
+        }
+
+    requirement_payload = {
+        "outline": {"title": outline_title, "summary": outline_summary},
+        "must_plants": [
+            {"id": item.get("id"), "content": item.get("content")}
+            for item in must_plant_items
+        ],
+        "must_payoffs": [
+            {"id": item.get("id"), "content": item.get("content")}
+            for item in must_payoff_items
+        ],
+    }
+
+    judge_system_prompt = (
+        "你是小说章节执行审校器。"
+        "请严格判断：正文是否覆盖本章大纲目标，是否包含所有“必须埋设”的伏笔，"
+        "是否包含所有“必须回收”的伏笔。"
+        "仅输出 JSON，不要任何解释。"
+    )
+    judge_input = (
+        f"[当前章节号]\n{chapter_number}\n\n"
+        f"[硬约束要求]\n{json.dumps(requirement_payload, ensure_ascii=False, indent=2)}\n\n"
+        f"[章节正文]\n{generated_text[:9000]}\n\n"
+        "[输出格式]\n"
+        '{'
+        '"outline_covered":true,'
+        '"missing_outline_points":["缺失点1"],'
+        '"missing_plant_ids":[1],'
+        '"missing_payoff_ids":[2]'
+        "}\n"
+        "注意：必须严格；只要未明确体现就视为缺失。"
+    )
+
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt=judge_system_prompt,
+            conversation_history=[{"role": "user", "content": judge_input}],
+            temperature=0.1,
+            user_id=user_id,
+            timeout=120.0,
+            response_format=None,
+        )
+        cleaned = remove_think_tags(response)
+        normalized = unwrap_markdown_json(cleaned)
+        sanitized = sanitize_json_like_text(normalized)
+        parsed = json.loads(sanitized)
+    except Exception as exc:
+        logger.warning("章节执行硬约束检查失败，降级为关键词检查: chapter=%s err=%s", chapter_number, exc)
+        plant_check = _check_foreshadowing_contract(generated_text, must_plant_items)
+        payoff_check = _check_foreshadowing_contract(generated_text, must_payoff_items)
+        outline_covered = bool((outline_title or "").strip()) and (outline_title.strip() in generated_text)
+        return {
+            "passed": outline_covered and plant_check["passed"] and payoff_check["passed"],
+            "outline_covered": outline_covered,
+            "missing_outline_points": [] if outline_covered else ["标题主目标未明确体现"],
+            "missing_plants": plant_check.get("missing", []),
+            "missing_payoffs": payoff_check.get("missing", []),
+        }
+
+    outline_covered = bool(parsed.get("outline_covered", False))
+    missing_outline_points_raw = parsed.get("missing_outline_points", [])
+    missing_outline_points = (
+        [str(item).strip() for item in missing_outline_points_raw if str(item).strip()]
+        if isinstance(missing_outline_points_raw, list)
+        else []
+    )
+
+    def _normalize_missing_ids(raw_value: Any) -> List[int]:
+        ids: List[int] = []
+        if not isinstance(raw_value, list):
+            return ids
+        for item in raw_value:
+            try:
+                ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    missing_plant_ids = set(_normalize_missing_ids(parsed.get("missing_plant_ids", [])))
+    missing_payoff_ids = set(_normalize_missing_ids(parsed.get("missing_payoff_ids", [])))
+
+    missing_plants = [item for item in must_plant_items if item.get("id") in missing_plant_ids]
+    missing_payoffs = [item for item in must_payoff_items if item.get("id") in missing_payoff_ids]
+
+    passed = outline_covered and not missing_plants and not missing_payoffs
+    return {
+        "passed": passed,
+        "outline_covered": outline_covered,
+        "missing_outline_points": missing_outline_points,
+        "missing_plants": missing_plants,
+        "missing_payoffs": missing_payoffs,
+    }
+
+
+def _normalize_foreshadowing_entry(entry: Any) -> Optional[Dict[str, Any]]:
+    """统一解析伏笔条目，兼容 str 和 dict 两种格式。"""
+    if isinstance(entry, str):
+        content = entry.strip()
+        if not content:
+            return None
+        return {
+            "content": content,
+            "target_reveal_chapter": None,
+            "importance": None,
+            "keywords": [],
+            "foreshadowing_id": None,
+        }
+
+    if isinstance(entry, dict):
+        raw_content = entry.get("content") or entry.get("description") or entry.get("text")
+        content = str(raw_content or "").strip()
+        if not content:
+            return None
+
+        target = entry.get("target_reveal_chapter")
+        if target is None:
+            target = entry.get("target_chapter")
+        if target is None:
+            target = entry.get("expected_payoff_chapter")
+        try:
+            target_chapter = int(target) if target is not None else None
+        except (TypeError, ValueError):
+            target_chapter = None
+
+        importance = entry.get("importance")
+        if isinstance(importance, str):
+            importance = importance.strip().lower()
+        if importance not in {"major", "minor", "subtle"}:
+            importance = None
+
+        keywords = entry.get("keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+        keywords = [str(k).strip() for k in keywords if str(k).strip()]
+
+        foreshadowing_id = entry.get("foreshadowing_id") or entry.get("id")
+        try:
+            foreshadowing_id = int(foreshadowing_id) if foreshadowing_id is not None else None
+        except (TypeError, ValueError):
+            foreshadowing_id = None
+
+        return {
+            "content": content,
+            "target_reveal_chapter": target_chapter,
+            "importance": importance,
+            "keywords": keywords,
+            "foreshadowing_id": foreshadowing_id,
+        }
+
+    return None
+
+
+async def _auto_resolve_foreshadowings_from_chapter(
+    *,
+    session: AsyncSession,
+    llm_service: LLMService,
+    project_id: str,
+    chapter_id: int,
+    chapter_number: int,
+    chapter_text: str,
+    user_id: int,
+) -> Dict[str, Any]:
+    """
+    基于章节正文自动识别并回收已触发的伏笔。
+    使用 LLM 做轻量判定，避免纯字符串匹配遗漏。
+    """
+    if not chapter_text.strip():
+        return {"resolved_count": 0, "candidate_count": 0}
+
+    foreshadowing_service = ForeshadowingService(session)
+    unresolved = await foreshadowing_service.get_unresolved_foreshadowings(
+        project_id=project_id,
+        current_chapter_number=chapter_number,
+    )
+    candidates = [fs for fs in unresolved if fs.chapter_number < chapter_number]
+    if not candidates:
+        return {"resolved_count": 0, "candidate_count": 0}
+
+    def _sort_key(fs: Any) -> tuple:
+        due_rank = 0 if (fs.target_reveal_chapter is not None and fs.target_reveal_chapter <= chapter_number) else 1
+        target_rank = fs.target_reveal_chapter if fs.target_reveal_chapter is not None else 10**9
+        urgency_rank = -(fs.urgency or 0)
+        age_rank = -(chapter_number - fs.chapter_number)
+        return (due_rank, target_rank, urgency_rank, age_rank)
+
+    candidates.sort(key=_sort_key)
+    candidates = candidates[:8]
+    candidate_map = {fs.id: fs for fs in candidates}
+
+    payload = []
+    for fs in candidates:
+        payload.append(
+            {
+                "id": fs.id,
+                "content": fs.content,
+                "planted_chapter": fs.chapter_number,
+                "target_reveal_chapter": fs.target_reveal_chapter,
+                "keywords": fs.keywords if isinstance(fs.keywords, list) else [],
+            }
+        )
+
+    judge_system_prompt = (
+        "你是小说伏笔追踪编辑。你将收到一章正文和候选未回收伏笔列表。"
+        "判断哪些伏笔在本章已经被明确回收或实质推进到可视为回收。"
+        "只输出 JSON，不要额外说明。"
+    )
+    judge_input = (
+        f"[当前章节号]\n{chapter_number}\n\n"
+        f"[本章正文]\n{chapter_text[:7000]}\n\n"
+        f"[候选伏笔]\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        "[输出格式]\n"
+        '{"resolved_ids":[1,2],"reason_by_id":{"1":"一句话原因"}}\n'
+        "注意：不确定时不要选。"
+    )
+
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt=judge_system_prompt,
+            conversation_history=[{"role": "user", "content": judge_input}],
+            temperature=0.1,
+            user_id=user_id,
+            timeout=120.0,
+            response_format=None,
+        )
+        cleaned = remove_think_tags(response)
+        normalized = unwrap_markdown_json(cleaned)
+        sanitized = sanitize_json_like_text(normalized)
+        parsed = json.loads(sanitized)
+    except Exception as exc:
+        logger.warning("自动回收伏笔判定失败，跳过本次: project=%s chapter=%s err=%s", project_id, chapter_number, exc)
+        return {"resolved_count": 0, "candidate_count": len(candidates)}
+
+    resolved_ids_raw = parsed.get("resolved_ids", [])
+    reason_by_id = parsed.get("reason_by_id", {}) if isinstance(parsed.get("reason_by_id"), dict) else {}
+    resolved_ids: List[int] = []
+    for rid in resolved_ids_raw if isinstance(resolved_ids_raw, list) else []:
+        try:
+            rid_int = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if rid_int in candidate_map:
+            resolved_ids.append(rid_int)
+
+    if not resolved_ids:
+        return {"resolved_count": 0, "candidate_count": len(candidates)}
+
+    resolved_count = 0
+    for rid in resolved_ids:
+        fs = candidate_map.get(rid)
+        if not fs:
+            continue
+        reason = str(reason_by_id.get(str(rid)) or reason_by_id.get(rid) or "").strip()
+        resolution_text = reason or f"自动判定在第{chapter_number}章完成回收"
+        try:
+            await foreshadowing_service.resolve_foreshadowing(
+                foreshadowing_id=rid,
+                resolved_chapter_id=chapter_id,
+                resolved_chapter_number=chapter_number,
+                resolution_text=resolution_text,
+                resolution_type="auto_detected",
+            )
+            resolved_count += 1
+        except Exception as exc:
+            logger.warning("自动回收伏笔写入失败: fs=%s chapter=%s err=%s", rid, chapter_number, exc)
+
+    if resolved_count > 0:
+        logger.info(
+            "自动回收伏笔完成: project=%s chapter=%s resolved=%s candidate=%s",
+            project_id,
+            chapter_number,
+            resolved_count,
+            len(candidates),
+        )
+    return {"resolved_count": resolved_count, "candidate_count": len(candidates)}
 
 
 async def _resolve_version_count(session: AsyncSession) -> int:
@@ -160,13 +525,28 @@ async def _generate_chapter_mission(
 """
 
     try:
-        response = await llm_service.get_llm_response(
-            system_prompt=plan_prompt,
-            conversation_history=[{"role": "user", "content": plan_input}],
-            temperature=0.3,
-            user_id=user_id,
-            timeout=120.0,
-        )
+        try:
+            response = await llm_service.get_llm_response(
+                system_prompt=plan_prompt,
+                conversation_history=[{"role": "user", "content": plan_input}],
+                temperature=0.3,
+                user_id=user_id,
+                timeout=120.0,
+            )
+        except HTTPException as exc:
+            detail_text = str(exc.detail)
+            # 个别模型会返回 finish_reason=stop 但正文为空，这里做一次轻量重试。
+            if exc.status_code == 503 and "未返回有效内容" in detail_text:
+                logger.warning("章节导演脚本首轮空响应，立即重试一次: user_id=%s", user_id)
+                response = await llm_service.get_llm_response(
+                    system_prompt=plan_prompt,
+                    conversation_history=[{"role": "user", "content": plan_input}],
+                    temperature=0.3,
+                    user_id=user_id,
+                    timeout=120.0,
+                )
+            else:
+                raise
         cleaned = remove_think_tags(response)
         normalized = unwrap_markdown_json(cleaned)
         mission = json.loads(normalized)
@@ -184,6 +564,9 @@ async def _rewrite_with_guardrails(
     chapter_mission: Optional[dict],
     violations_text: str,
     user_id: int,
+    min_chars: Optional[int] = None,
+    max_chars: Optional[int] = None,
+    max_tokens: int = 2200,
 ) -> str:
     """
     使用护栏修复提示词重写违规内容
@@ -203,6 +586,13 @@ async def _rewrite_with_guardrails(
 [违规列表]
 {violations_text}
 """
+    if min_chars is not None and max_chars is not None:
+        rewrite_input += (
+            f"\n\n[字数硬约束]\n"
+            f"- 改写后正文必须控制在 {min_chars}-{max_chars} 字\n"
+            f"- 不得超过 {max_chars} 字\n"
+            f"- 必须保留完整结尾，禁止半句截断\n"
+        )
 
     try:
         response = await llm_service.get_llm_response(
@@ -212,12 +602,66 @@ async def _rewrite_with_guardrails(
             user_id=user_id,
             timeout=300.0,
             response_format=None,
+            max_tokens=max_tokens,
         )
         cleaned = remove_think_tags(response)
         logger.info("成功修复违规内容")
         return cleaned
     except Exception as exc:
         logger.warning("自动修复失败，返回原文: %s", exc)
+        return original_text
+
+
+async def _rewrite_to_target_length(
+    llm_service: LLMService,
+    original_text: str,
+    chapter_mission: Optional[dict],
+    outline_title: str,
+    outline_summary: str,
+    min_chars: int,
+    target_max_chars: int,
+    hard_max_chars: int,
+    user_id: int,
+) -> str:
+    """在不丢失关键剧情与伏笔的前提下压缩正文长度。"""
+    system_prompt = (
+        "你是网文编辑。请将正文压缩到目标字数范围，同时保证剧情连贯和章节钩子完整。"
+        "不得删除本章关键事件、大纲目标和已执行伏笔。只输出正文，不要解释。"
+    )
+    rewrite_input = f"""
+[原文]
+{original_text}
+
+[本章大纲]
+标题：{outline_title}
+摘要：{outline_summary}
+
+[章节导演脚本]
+{json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无"}
+
+[压缩目标]
+- 目标范围：{min_chars}-{target_max_chars} 字
+- 硬上限：{hard_max_chars} 字
+
+[要求]
+1. 保留起-承-转-钩结构，不写成摘要。
+2. 保留关键事件与伏笔触发点。
+3. 优先压缩重复描写、赘余修饰、无效对话。
+4. 结尾必须完整，不允许断句或突然中断。
+"""
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt=system_prompt,
+            conversation_history=[{"role": "user", "content": rewrite_input}],
+            temperature=0.2,
+            user_id=user_id,
+            timeout=240.0,
+            response_format=None,
+            max_tokens=3600,
+        )
+        return remove_think_tags(response).strip()
+    except Exception as exc:
+        logger.warning("压缩重写失败，返回原文: %s", exc)
         return original_text
 
 
@@ -335,6 +779,19 @@ async def _finalize_chapter_async(
             user_id=user_id,
             skip_vector_update=skip_vector_update,
         )
+        try:
+            await _auto_resolve_foreshadowings_from_chapter(
+                session=session,
+                llm_service=llm_service,
+                project_id=project_id,
+                chapter_id=chapter.id,
+                chapter_number=chapter_number,
+                chapter_text=selected_version.content,
+                user_id=user_id,
+            )
+            await session.commit()
+        except Exception as exc:
+            logger.warning("异步定稿后自动回收伏笔失败: project=%s chapter=%s err=%s", project_id, chapter_number, exc)
 
 
 def _schedule_finalize_task(
@@ -446,6 +903,23 @@ async def finalize_chapter(
         user_id=current_user.id,
         skip_vector_update=request.skip_vector_update or False,
     )
+    try:
+        llm_service = LLMService(session)
+        auto_resolve_result = await _auto_resolve_foreshadowings_from_chapter(
+            session=session,
+            llm_service=llm_service,
+            project_id=request.project_id,
+            chapter_id=chapter.id,
+            chapter_number=chapter_number,
+            chapter_text=selected_version.content,
+            user_id=current_user.id,
+        )
+        if auto_resolve_result.get("resolved_count", 0) > 0:
+            await session.commit()
+            finalize_result.setdefault("updates", {})
+            finalize_result["updates"]["foreshadowing_auto_resolve"] = auto_resolve_result["resolved_count"]
+    except Exception as exc:
+        logger.warning("定稿后自动回收伏笔失败: project=%s chapter=%s err=%s", request.project_id, chapter_number, exc)
 
     return FinalizeChapterResponse(
         project_id=request.project_id,
@@ -475,9 +949,20 @@ async def generate_chapter(
     llm_service = LLMService(session)
     context_builder = WriterContextBuilder()
     guardrails = ChapterGuardrails()
+    style_rule_service = UserStyleRuleService(session)
+    chapter_min_chars = 2400
+    chapter_target_max_chars = 3000
+    chapter_hard_max_chars = 3000
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("用户 %s 开始为项目 %s 生成第 %s 章", current_user.id, project_id, request.chapter_number)
+    personal_rules = await style_rule_service.get_effective_rules(
+        user_id=current_user.id,
+        project_id=project_id,
+        rule_types=["general", "outline_generation", "chapter_writing"],
+        limit=20,
+    )
+    personal_rules_text = _format_personal_rules_section(personal_rules)
     outline = await novel_service.get_outline(project_id, request.chapter_number)
     if not outline:
         logger.warning("项目 %s 未找到第 %s 章纲要，生成流程终止", project_id, request.chapter_number)
@@ -537,6 +1022,12 @@ async def generate_chapter(
     outline_title = outline.title or f"第{outline.chapter_number}章"
     outline_summary = outline.summary or "暂无摘要"
     writing_notes = request.writing_notes or "无额外写作指令"
+    writing_notes_for_director = writing_notes
+    if personal_rules:
+        writing_notes_for_director = (
+            f"{writing_notes}\n\n[用户个人风格规则]\n{personal_rules_text}\n"
+            "请将以上规则作为优先风格约束。"
+        )
 
     # 提取所有角色名
     all_characters = [c.get("name") for c in blueprint_dict.get("characters", []) if c.get("name")]
@@ -550,7 +1041,7 @@ async def generate_chapter(
         previous_tail=previous_tail_excerpt,
         outline_title=outline_title,
         outline_summary=outline_summary,
-        writing_notes=writing_notes,
+        writing_notes=writing_notes_for_director,
         introduced_characters=[],  # 将在下一步填充
         all_characters=all_characters,
         user_id=current_user.id,
@@ -605,9 +1096,133 @@ async def generate_chapter(
         project_id=project_id,
         query_text=rag_query or outline.title or outline.summary or "",
         user_id=current_user.id,
+        max_chapter_exclusive=request.chapter_number,
     )
-    rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context.chunks else "未检索到章节片段"
-    rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context.summaries else "未检索到章节摘要"
+    # 剧情片段上下文策略（防时间穿越）：
+    # 1) 仅允许当前章之前的片段进入上下文（严格排除当前章与未来章节）
+    # 2) 上一章片段作为主干硬约束（最多 2 条）
+    # 3) 额外补 1 条更早章节的语义相关片段（可选）
+    temporal_chunks = [
+        chunk
+        for chunk in rag_context.chunks
+        if chunk.chapter_number > 0
+        and chunk.chapter_number < request.chapter_number
+        and (chunk.content or "").strip()
+    ]
+    previous_chapter_number = request.chapter_number - 1
+    chunk_backbone_limit = 2
+    backbone_chunks = [
+        chunk for chunk in temporal_chunks if chunk.chapter_number == previous_chapter_number
+    ][:chunk_backbone_limit]
+
+    # 若上一章未命中，则回退到“最近的已存在前章”
+    if not backbone_chunks:
+        available_prev_numbers = [chunk.chapter_number for chunk in temporal_chunks]
+        latest_available_prev = max(available_prev_numbers) if available_prev_numbers else None
+        if latest_available_prev is not None:
+            backbone_chunks = [
+                chunk for chunk in temporal_chunks if chunk.chapter_number == latest_available_prev
+            ][:chunk_backbone_limit]
+
+    backbone_numbers = {chunk.chapter_number for chunk in backbone_chunks}
+
+    remote_semantic_chunk = None
+    for chunk in temporal_chunks:
+        # 远章补充只从非主干章节中选
+        if chunk.chapter_number in backbone_numbers:
+            continue
+        remote_semantic_chunk = chunk
+        break
+
+    chunk_blocks = [
+        "优先级规则：近章剧情片段 > 远章语义片段。必须先保证与上一章连续，远章仅用于伏笔回收或背景补充。"
+    ]
+    if backbone_chunks:
+        backbone_lines = []
+        for idx, chunk in enumerate(backbone_chunks, start=1):
+            title = chunk.chapter_title or f"第{chunk.chapter_number}章"
+            backbone_lines.append(f"### Backbone Chunk {idx}(来源：{title})\n{chunk.content.strip()}")
+        chunk_blocks.append("### 近章主干（硬约束）\n" + "\n\n".join(backbone_lines))
+    else:
+        chunk_blocks.append("### 近章主干（硬约束）\n- 无（暂无可用前章片段）")
+
+    if remote_semantic_chunk:
+        remote_title = remote_semantic_chunk.chapter_title or f"第{remote_semantic_chunk.chapter_number}章"
+        chunk_blocks.append(
+            "### 远章补充（可选，软参考）\n"
+            + f"### Remote Chunk(来源：{remote_title})\n{remote_semantic_chunk.content.strip()}"
+        )
+    else:
+        chunk_blocks.append("### 远章补充（可选，软参考）\n- 无")
+
+    rag_chunks_text = "\n\n".join(chunk_blocks)
+    logger.info(
+        "章节剧情上下文已构建: project=%s chapter=%s backbone_chapters=%s remote_chapter=%s dropped_current_or_future=%s",
+        project_id,
+        request.chapter_number,
+        sorted(list(backbone_numbers)),
+        remote_semantic_chunk.chapter_number if remote_semantic_chunk else None,
+        sorted(
+            {
+                chunk.chapter_number
+                for chunk in rag_context.chunks
+                if chunk.chapter_number >= request.chapter_number
+            }
+        ),
+    )
+
+    # 摘要上下文策略：最近 3 章作为主干硬约束，额外补 1 条远章语义相关摘要（可选）
+    recent_summary_window = 3
+    completed_summary_rows = [
+        row
+        for row in completed_chapters
+        if row.get("chapter_number", 0) < request.chapter_number and (row.get("summary") or "").strip()
+    ]
+    completed_summary_rows.sort(key=lambda row: row.get("chapter_number", 0))
+    recent_backbone_rows = completed_summary_rows[-recent_summary_window:]
+    recent_backbone_numbers = {row.get("chapter_number", 0) for row in recent_backbone_rows}
+
+    recent_backbone_lines = []
+    for row in recent_backbone_rows:
+        chapter_no = row.get("chapter_number", 0)
+        chapter_title = row.get("title") or f"第{chapter_no}章"
+        chapter_summary = (row.get("summary") or "").strip()
+        recent_backbone_lines.append(f"- 第{chapter_no}章 - {chapter_title}:{chapter_summary}")
+
+    remote_semantic_line = None
+    for item in rag_context.summaries:
+        chapter_no = item.chapter_number
+        if chapter_no >= request.chapter_number:
+            continue
+        if chapter_no in recent_backbone_numbers:
+            continue
+        summary_text = (item.summary or "").strip()
+        if not summary_text:
+            continue
+        remote_semantic_line = f"- 第{chapter_no}章 - {item.title}:{summary_text}"
+        break
+
+    summary_blocks = [
+        "优先级规则：近章摘要 > 远章语义补充。写作时必须先遵循最近3章的连续性，远章只用于伏笔回收或背景补充。"
+    ]
+    if recent_backbone_lines:
+        summary_blocks.append("### 近章主干（硬约束，按章节顺序）\n" + "\n".join(recent_backbone_lines))
+    else:
+        summary_blocks.append("### 近章主干（硬约束，按章节顺序）\n- 暂无（这是前几章）")
+
+    if remote_semantic_line:
+        summary_blocks.append("### 远章补充（可选，软参考）\n" + remote_semantic_line)
+    else:
+        summary_blocks.append("### 远章补充（可选，软参考）\n- 无")
+
+    rag_summaries_text = "\n\n".join(summary_blocks)
+    logger.info(
+        "章节摘要上下文已构建: project=%s chapter=%s recent_backbone=%s remote_semantic=%s",
+        project_id,
+        request.chapter_number,
+        [row.get("chapter_number", 0) for row in recent_backbone_rows],
+        remote_semantic_line is not None,
+    )
 
     # ========== 5. 构建写作提示词 ==========
     # 优先使用 writing_v2，fallback 到 writing
@@ -626,6 +1241,144 @@ async def generate_chapter(
     
     # 构建禁止角色列表
     forbidden_text = json.dumps(forbidden_characters, ensure_ascii=False) if forbidden_characters else "无"
+
+    # 构建伏笔执行清单（硬约束）
+    foreshadowing_service = ForeshadowingService(session)
+    planted_stmt = (
+        select(Foreshadowing)
+        .where(
+            Foreshadowing.project_id == project_id,
+            Foreshadowing.chapter_number == request.chapter_number,
+            Foreshadowing.status != "abandoned",
+        )
+        .order_by(Foreshadowing.id)
+    )
+    planted_result = await session.execute(planted_stmt)
+    planted_for_current = planted_result.scalars().all()
+    must_plant_items: List[Dict[str, Any]] = []
+    seen_plant_contents = set()
+    for fs in planted_for_current:
+        content = str(fs.content or "").strip()
+        if not content or content in seen_plant_contents:
+            continue
+        seen_plant_contents.add(content)
+        must_plant_items.append(
+            {
+                "id": fs.id,
+                "name": fs.name,
+                "content": content,
+                "chapter_number": fs.chapter_number,
+                "urgency": fs.urgency,
+                "keywords": fs.keywords if isinstance(fs.keywords, list) else [],
+            }
+        )
+    must_plant_items = must_plant_items[:5]
+
+    unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+        project_id=project_id,
+        current_chapter_number=request.chapter_number,
+    )
+    due_payoff_items: List[Dict[str, Any]] = []
+    soft_reminder_items: List[Dict[str, Any]] = []
+    overdue_escalation_chapters = max(1, int(settings.foreshadowing_overdue_escalation_chapters))
+    for fs in unresolved_foreshadowings:
+        target_chapter = fs.target_reveal_chapter
+        if target_chapter is None:
+            soft_reminder_items.append(
+                {
+                    "id": fs.id,
+                    "name": fs.name,
+                    "content": fs.content,
+                    "chapter_number": fs.chapter_number,
+                    "urgency": fs.urgency,
+                    "keywords": fs.keywords if isinstance(fs.keywords, list) else [],
+                }
+            )
+            continue
+        if target_chapter > request.chapter_number:
+            continue
+        overdue_chapters = max(0, request.chapter_number - target_chapter)
+        is_overdue_escalated = overdue_chapters >= overdue_escalation_chapters
+        due_payoff_items.append(
+            {
+                "id": fs.id,
+                "name": fs.name,
+                "content": fs.content,
+                "chapter_number": fs.chapter_number,
+                "target_reveal_chapter": target_chapter,
+                "urgency": fs.urgency,
+                "overdue_chapters": overdue_chapters,
+                "is_overdue_escalated": is_overdue_escalated,
+                "keywords": fs.keywords if isinstance(fs.keywords, list) else [],
+            }
+        )
+
+    due_payoff_items.sort(
+        key=lambda item: (
+            -(1 if item.get("is_overdue_escalated") else 0),
+            item.get("target_reveal_chapter") if item.get("target_reveal_chapter") is not None else 10**9,
+            -(item.get("urgency") or 0),
+            item.get("chapter_number") or 0,
+        )
+    )
+    # 限制硬约束数量，避免过载
+    due_payoff_items = due_payoff_items[:3]
+    soft_reminder_items.sort(
+        key=lambda item: (
+            -(item.get("urgency") or 0),
+            item.get("chapter_number") or 0,
+        )
+    )
+    soft_reminder_items = soft_reminder_items[:5]
+
+    hard_contract_lines: List[str] = []
+    hard_contract_lines.append("本章硬约束（必须满足）：")
+    hard_contract_lines.append(
+        f"- 必须覆盖本章大纲目标：标题《{outline_title}》；摘要要点：{outline_summary}"
+    )
+
+    if must_plant_items:
+        hard_contract_lines.append("- 必须埋设以下伏笔（每条都需在正文中明确出现）：")
+        for item in must_plant_items:
+            name = item.get("name") or f"伏笔#{item.get('id')}"
+            hard_contract_lines.append(f"  - [{name}] 内容：{item.get('content')}")
+    else:
+        hard_contract_lines.append("- 本章无“必埋伏笔”硬性条目。")
+
+    if due_payoff_items:
+        hard_contract_lines.append("- 必须回收以下伏笔（每条都需在正文中明确体现）：")
+        for item in due_payoff_items:
+            name = item.get("name") or f"伏笔#{item.get('id')}"
+            planted = item.get("chapter_number")
+            target = item.get("target_reveal_chapter")
+            content = str(item.get("content") or "").strip()
+            escalation_tag = ""
+            if item.get("is_overdue_escalated"):
+                escalation_tag = f"【超期升级：已连续{item.get('overdue_chapters')}章未回收】"
+            hard_contract_lines.append(
+                f"  - [{name}] 埋设章={planted} 目标回收章={target if target is not None else '未指定'} {escalation_tag} 内容：{content}"
+            )
+    else:
+        hard_contract_lines.append("- 本章无“必收伏笔”硬性条目。")
+
+    hard_contract_lines.append(
+        f"- 若标记为【超期升级】（到期后连续{overdue_escalation_chapters}章未回收），应优先处理。"
+    )
+    foreshadowing_contract_text = "\n".join(hard_contract_lines)
+
+    if soft_reminder_items:
+        soft_lines = []
+        for item in soft_reminder_items:
+            name = item.get("name") or f"伏笔#{item.get('id')}"
+            planted = item.get("chapter_number")
+            content = str(item.get("content") or "").strip()
+            soft_lines.append(f"- [{name}] 埋设章={planted} 内容：{content}")
+        foreshadowing_soft_reminder_text = (
+            "本章软提醒：以下伏笔尚未设置目标回收章，仅在不破坏主线节奏时酌情提及或轻推。\n"
+            + "\n".join(soft_lines)
+        )
+    else:
+        foreshadowing_soft_reminder_text = "本章无伏笔软提醒。"
 
     # 构建衔接提示
     if previous_tail_excerpt and previous_tail_excerpt != "暂无（这是第一章）":
@@ -648,10 +1401,13 @@ async def generate_chapter(
         ("[章节衔接要求]", continuity_hint),
         ("[章节导演脚本](JSON)", mission_text),
         ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
-        ("[检索到的章节摘要](Markdown)", rag_summaries_text),
+        ("[章节摘要上下文](Markdown)", rag_summaries_text),
+        ("[本章伏笔执行清单](硬约束)", foreshadowing_contract_text),
+        ("[本章伏笔提醒](软提醒)", foreshadowing_soft_reminder_text),
+        ("[用户个人风格规则](优先约束)", personal_rules_text),
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
         ("[禁止角色](本章不允许提及)", forbidden_text),
-        ("[字数要求]", "本章节正文字数必须严格控制在 3000-4000 字之间。超过 4000 字或低于 3000 字均不符合要求。在心里将全章分为「开场(约800字)→发展(约1500字)→转折(约1000字)→钩子(约400字)」四段，每段写完后心算累计字数，到达 3500 字时立即进入钩子收尾，绝不继续展开新内容。注意：这只是心理规划，绝对不要在正文中写出「**【开场】**」「**【发展】**」等结构标记。"),
+        ("[字数要求]", "本章节正文字数必须控制在 2400-3000 字，3000 字是硬上限。请在心里将全章分为「开场(约600字)→发展(约1100字)→转折(约800字)→钩子(约300字)」四段，累计到约 2700 字时主动进入钩子收尾。注意：这只是心理规划，绝对不要在正文中写出「**【开场】**」「**【发展】**」等结构标记。"),
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug("章节写作提示词长度: %s 字符", len(prompt_input))
@@ -665,15 +1421,37 @@ async def generate_chapter(
             if version_style_hint:
                 final_prompt_input += f"\n\n[版本风格提示]\n{version_style_hint}"
 
-            response = await llm_service.get_llm_response(
-                system_prompt=writer_prompt,
-                conversation_history=[{"role": "user", "content": final_prompt_input}],
-                temperature=0.9,
-                user_id=current_user.id,
-                timeout=600.0,
-                response_format=None,
-                max_tokens=5500,  # 目标 3000-4000 字，中文约 1.5 字/token，5500 为硬限制（强制模型在 4000 字内收尾）
-            )
+            try:
+                response = await llm_service.get_llm_response(
+                    system_prompt=writer_prompt,
+                    conversation_history=[{"role": "user", "content": final_prompt_input}],
+                    temperature=0.9,
+                    user_id=current_user.id,
+                    timeout=600.0,
+                    response_format=None,
+                    max_tokens=2200,  # 首轮进一步控长，降低超出 3000 字概率
+                )
+            except HTTPException as exc:
+                detail_text = str(exc.detail)
+                # 个别模型会出现“finish_reason=length 且正文为空”，这里做一次小幅放宽重试。
+                if exc.status_code == 503 and "长度限制" in detail_text:
+                    logger.warning(
+                        "项目 %s 第 %s 章版本 %s 首轮空响应(length) ，放宽 max_tokens 重试一次",
+                        project_id,
+                        request.chapter_number,
+                        idx + 1,
+                    )
+                    response = await llm_service.get_llm_response(
+                        system_prompt=writer_prompt,
+                        conversation_history=[{"role": "user", "content": final_prompt_input}],
+                        temperature=0.9,
+                        user_id=current_user.id,
+                        timeout=600.0,
+                        response_format=None,
+                        max_tokens=2600,
+                    )
+                else:
+                    raise
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
             
@@ -710,6 +1488,71 @@ async def generate_chapter(
                     chapter_mission=chapter_mission,
                     violations_text=violations_text,
                     user_id=current_user.id,
+                    min_chars=chapter_min_chars,
+                    max_chars=chapter_hard_max_chars,
+                    max_tokens=2200,
+                )
+
+            # ========== 8. 章节执行硬约束检查（大纲 + 埋 + 收） ==========
+            contract_check = await _check_chapter_execution_contract(
+                llm_service=llm_service,
+                user_id=current_user.id,
+                chapter_number=request.chapter_number,
+                generated_text=final_content,
+                outline_title=outline_title,
+                outline_summary=outline_summary,
+                must_plant_items=must_plant_items,
+                must_payoff_items=due_payoff_items,
+            )
+            if not contract_check["passed"]:
+                lines = ["检测到本章未满足硬约束："]
+                if not contract_check.get("outline_covered", False):
+                    lines.append("1. 未充分覆盖本章大纲目标")
+                    for point in contract_check.get("missing_outline_points", [])[:5]:
+                        lines.append(f"   - 缺失点：{point}")
+                missing_plants = contract_check.get("missing_plants", [])
+                if missing_plants:
+                    lines.append("2. 未覆盖的“必埋伏笔”：")
+                    for item in missing_plants:
+                        lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
+                missing_payoffs = contract_check.get("missing_payoffs", [])
+                if missing_payoffs:
+                    lines.append("3. 未覆盖的“必收伏笔”：")
+                    for item in missing_payoffs:
+                        lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
+
+                contract_violations_text = "\n".join(lines)
+
+                logger.warning(
+                    "项目 %s 第 %s 章版本 %s 未满足硬约束: outline_covered=%s missing_plants=%s missing_payoffs=%s，触发定向重写",
+                    project_id,
+                    request.chapter_number,
+                    idx + 1,
+                    contract_check.get("outline_covered", False),
+                    len(missing_plants),
+                    len(missing_payoffs),
+                )
+                final_content = await _rewrite_with_guardrails(
+                    llm_service=llm_service,
+                    prompt_service=prompt_service,
+                    original_text=final_content,
+                    chapter_mission=chapter_mission,
+                    violations_text=contract_violations_text,
+                    user_id=current_user.id,
+                    min_chars=chapter_min_chars,
+                    max_chars=chapter_hard_max_chars,
+                    max_tokens=2200,
+                )
+                # 重写后复检一次
+                contract_check = await _check_chapter_execution_contract(
+                    llm_service=llm_service,
+                    user_id=current_user.id,
+                    chapter_number=request.chapter_number,
+                    generated_text=final_content,
+                    outline_title=outline_title,
+                    outline_summary=outline_summary,
+                    must_plant_items=must_plant_items,
+                    must_payoff_items=due_payoff_items,
                 )
 
             def _extract_text(value: object) -> Optional[str]:
@@ -743,6 +1586,36 @@ async def generate_chapter(
                 "content": extracted_text or final_content,
                 "parsed_json": parsed_json,
                 "guardrail": guardrail_metadata,
+                "foreshadowing_contract": {
+                    "outline_required": {
+                        "title": outline_title,
+                        "summary": outline_summary,
+                    },
+                    "required_plants": [
+                        {
+                            "id": item.get("id"),
+                            "name": item.get("name"),
+                            "chapter_number": item.get("chapter_number"),
+                            "content": item.get("content"),
+                        }
+                        for item in must_plant_items
+                    ],
+                    "required_payoffs": [
+                        {
+                            "id": item.get("id"),
+                            "name": item.get("name"),
+                            "planted_chapter": item.get("chapter_number"),
+                            "target_reveal_chapter": item.get("target_reveal_chapter"),
+                            "content": item.get("content"),
+                        }
+                        for item in due_payoff_items
+                    ],
+                    "passed": contract_check["passed"],
+                    "outline_covered": contract_check.get("outline_covered", False),
+                    "missing_outline_points": contract_check.get("missing_outline_points", []),
+                    "missing_plants": contract_check.get("missing_plants", []),
+                    "missing_payoffs": contract_check.get("missing_payoffs", []),
+                },
                 "chapter_mission": chapter_mission,
             }
         except HTTPException:
@@ -806,40 +1679,39 @@ async def generate_chapter(
             contents.append(str(variant))
             metadata.append({"raw": variant})
 
-    # 字数验证与截断
-    TARGET_MAX = 4000
+    # 字数审计日志（不做常规截断）
     for i, content in enumerate(contents):
         word_count = len(content)
-        if word_count > TARGET_MAX:
-            # 在段落边界截断，避免截断到句子中间
-            truncated = content[:TARGET_MAX]
-            last_para = truncated.rfind("\n\n")
-            last_newline = truncated.rfind("\n")
-            cut_pos = last_para if last_para > TARGET_MAX * 0.85 else (last_newline if last_newline > TARGET_MAX * 0.85 else TARGET_MAX)
-            contents[i] = content[:cut_pos].rstrip()
+        if word_count > chapter_hard_max_chars:
             logger.warning(
-                "项目 %s 第 %s 章版本 %s 字数超出上限: %s 字，已截断至 %s 字",
+                "项目 %s 第 %s 章版本 %s 字数超出硬上限: %s 字（目标: %s-%s，硬上限: %s）",
                 project_id,
                 request.chapter_number,
                 i + 1,
                 word_count,
-                len(contents[i]),
+                chapter_min_chars,
+                chapter_target_max_chars,
+                chapter_hard_max_chars,
             )
-        elif word_count < 3000:
+        elif word_count < chapter_min_chars:
             logger.warning(
-                "项目 %s 第 %s 章版本 %s 字数不足: %s 字（目标: 3500-4000 字）",
+                "项目 %s 第 %s 章版本 %s 字数偏短: %s 字（目标: %s-%s）",
                 project_id,
                 request.chapter_number,
                 i + 1,
                 word_count,
+                chapter_min_chars,
+                chapter_target_max_chars,
             )
         else:
             logger.info(
-                "项目 %s 第 %s 章版本 %s 字数符合要求: %s 字",
+                "项目 %s 第 %s 章版本 %s 字数在目标区间内: %s 字（目标: %s-%s）",
                 project_id,
                 request.chapter_number,
                 i + 1,
                 word_count,
+                chapter_min_chars,
+                chapter_target_max_chars,
             )
 
     # ========== 8. AI Review: 自动评审多版本 ==========
@@ -927,6 +1799,28 @@ async def select_chapter_version(
     except Exception as e:
         logger.error(f"章节 {request.chapter_number} 向量化入库失败: {e}")
         # 向量化失败不应阻止版本选择，仅记录错误
+
+    # 自动回收伏笔（选版即定稿场景）
+    try:
+        llm_service = LLMService(session)
+        auto_resolve_result = await _auto_resolve_foreshadowings_from_chapter(
+            session=session,
+            llm_service=llm_service,
+            project_id=project_id,
+            chapter_id=chapter.id,
+            chapter_number=request.chapter_number,
+            chapter_text=selected_version.content,
+            user_id=current_user.id,
+        )
+        if auto_resolve_result.get("resolved_count", 0) > 0:
+            await session.commit()
+    except Exception as exc:
+        logger.warning(
+            "选版后自动回收伏笔失败: project=%s chapter=%s err=%s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
@@ -1115,8 +2009,8 @@ async def update_chapter_outline(
     # 如果提供了 AI 建议，将其提炼为规则并追加到提示词文件中
     if request.ai_message and request.ai_message.strip():
         try:
-            prompt_service = PromptService(session)
             llm_service = LLMService(session)
+            style_rule_service = UserStyleRuleService(session)
 
             # 调用 LLM 将 AI 建议提炼为简洁的规则
             extract_prompt = f"""请将以下关于小说大纲生成的建议提炼为一条简洁、通用的规则。
@@ -1140,12 +2034,17 @@ AI建议内容：
             )
 
             if extracted_rule and extracted_rule.strip():
-                # 追加到 outline_generation 提示词（合并到已有用户反馈区块）
-                success = await prompt_service.append_user_feedback_rule("outline_generation", extracted_rule.strip())
-                if success:
-                    logger.info(f"已将 AI 建议提炼为规则并追加到 outline_generation 提示词")
+                saved = await style_rule_service.add_rule(
+                    user_id=current_user.id,
+                    project_id=project_id,
+                    rule_type="outline_generation",
+                    content=extracted_rule.strip(),
+                    source="update_outline_ai_message",
+                )
+                if saved:
+                    logger.info("已将 AI 建议提炼为个人规则: user=%s project=%s", current_user.id, project_id)
                 else:
-                    logger.warning(f"追加规则到 outline_generation 提示词失败")
+                    logger.warning("个人规则保存失败（可能为空或重复）: user=%s project=%s", current_user.id, project_id)
         except Exception as e:
             logger.error(f"处理 AI 建议时出错: {str(e)}")
             # 不影响主流程，继续返回
@@ -1296,6 +2195,17 @@ async def delete_chapters(
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
+@router.get("/novels/{project_id}/chapters/{chapter_number}/status", response_model=ChapterRuntimeStatus)
+async def get_chapter_runtime_status(
+    project_id: str,
+    chapter_number: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> ChapterRuntimeStatus:
+    novel_service = NovelService(session)
+    return await novel_service.get_chapter_runtime_status(project_id, current_user.id, chapter_number)
+
+
 @router.post("/novels/{project_id}/chapters/outline", response_model=NovelProjectSchema)
 async def generate_chapters_outline(
     project_id: str,
@@ -1304,10 +2214,29 @@ async def generate_chapters_outline(
     current_user: UserInDB = Depends(get_current_user),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
-    prompt_service = PromptService(session)
-    llm_service = LLMService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
 
-    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    # 兼容旧接口：统一走预览 + 确认流程，避免两套大纲生成逻辑长期分叉
+    preview = await preview_chapters_outline(
+        project_id=project_id,
+        request=OutlinePreviewRequest(
+            start_chapter=request.start_chapter,
+            num_chapters=request.num_chapters,
+            total_chapters=request.total_chapters,
+            user_hint=request.user_hint,
+        ),
+        session=session,
+        current_user=current_user,
+    )
+    return await confirm_chapters_outline(
+        project_id=project_id,
+        request=OutlineConfirmRequest(
+            start_chapter=request.start_chapter,
+            preview_data=preview.model_dump(),
+        ),
+        session=session,
+        current_user=current_user,
+    )
 
     # 获取蓝图信息
     project_schema = await novel_service._serialize_project(project)
@@ -1434,43 +2363,16 @@ async def generate_chapters_outline(
         # 处理新地点
         new_locations = data.get("new_locations", [])
         if new_locations and project_schema.blueprint:
-            existing_world = project_schema.blueprint.world_setting or {}
-            existing_locations = existing_world.get("locations", [])
-            existing_location_names = {loc.get("name") for loc in existing_locations}
-
-            for loc in new_locations:
-                if loc.get("name") and loc["name"] not in existing_location_names:
-                    existing_locations.append({
-                        "name": loc.get("name"),
-                        "description": loc.get("description", ""),
-                        "type": loc.get("type", ""),
-                        "first_appear_chapter": loc.get("first_appear_chapter")
-                    })
-                    logger.info(f"新增地点: {loc.get('name')}")
-
-            existing_world["locations"] = existing_locations
-            await novel_service.update_blueprint_world_setting(project_id, existing_world)
+            location_service = KeyLocationService(session)
+            await location_service.upsert_locations(project_id, new_locations)
+            logger.info(f"新增地点（写入 key_locations 表）: {len(new_locations)} 条")
 
         # 处理新势力
         new_factions = data.get("new_factions", [])
         if new_factions and project_schema.blueprint:
-            existing_world = project_schema.blueprint.world_setting or {}
-            existing_factions = existing_world.get("factions", [])
-            existing_faction_names = {fac.get("name") for fac in existing_factions}
-
-            for fac in new_factions:
-                if fac.get("name") and fac["name"] not in existing_faction_names:
-                    existing_factions.append({
-                        "name": fac.get("name"),
-                        "description": fac.get("description", ""),
-                        "leader": fac.get("leader", ""),
-                        "goals": fac.get("goals", ""),
-                        "first_appear_chapter": fac.get("first_appear_chapter")
-                    })
-                    logger.info(f"新增势力: {fac.get('name')}")
-
-            existing_world["factions"] = existing_factions
-            await novel_service.update_blueprint_world_setting(project_id, existing_world)
+            faction_service = FactionService(session, prompt_service)
+            await faction_service.upsert_factions(project_id, new_factions)
+            logger.info(f"新增势力（写入 factions 表）: {len(new_factions)} 条")
 
         # 处理伏笔：从大纲中提取伏笔并添加到伏笔管理系统
         foreshadowing_service = ForeshadowingService(session)
@@ -1484,51 +2386,74 @@ async def generate_chapters_outline(
             chapter = await novel_service.get_or_create_chapter(project_id, chapter_number)
 
             # 处理埋设的伏笔
-            for plant_content in plant_list:
-                if plant_content and isinstance(plant_content, str) and plant_content.strip():
-                    try:
-                        await foreshadowing_service.create_foreshadowing(
-                            project_id=project_id,
-                            chapter_id=chapter.id,
-                            chapter_number=chapter_number,
-                            content=plant_content.strip(),
-                            foreshadowing_type="hint",  # 默认类型为 hint
-                            is_manual=False,  # AI 生成的伏笔
-                            ai_confidence=0.8,  # 默认置信度
-                        )
-                        logger.info(f"新增伏笔: project={project_id}, chapter={chapter_number}, content={plant_content[:50]}...")
-                    except Exception as fe:
-                        logger.warning(f"创建伏笔失败: {fe}")
+            for raw_plant in plant_list:
+                plant = _normalize_foreshadowing_entry(raw_plant)
+                if not plant:
+                    continue
+                try:
+                    await foreshadowing_service.create_foreshadowing(
+                        project_id=project_id,
+                        chapter_id=chapter.id,
+                        chapter_number=chapter_number,
+                        content=plant["content"],
+                        foreshadowing_type="hint",
+                        keywords=plant.get("keywords"),
+                        is_manual=False,
+                        ai_confidence=0.8,
+                        target_reveal_chapter=plant.get("target_reveal_chapter"),
+                        importance=plant.get("importance"),
+                    )
+                    logger.info(
+                        "新增伏笔: project=%s chapter=%s target=%s content=%s...",
+                        project_id,
+                        chapter_number,
+                        plant.get("target_reveal_chapter"),
+                        plant["content"][:50],
+                    )
+                except Exception as fe:
+                    logger.warning(f"创建伏笔失败: {fe}")
 
             # 处理回收的伏笔
-            for payoff_content in payoff_list:
-                if payoff_content and isinstance(payoff_content, str) and payoff_content.strip():
-                    try:
-                        # 尝试匹配未回收的伏笔
-                        unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
-                            project_id, chapter_number
-                        )
-                        # 简单匹配：查找内容相似的伏笔
-                        matched = None
+            for raw_payoff in payoff_list:
+                payoff = _normalize_foreshadowing_entry(raw_payoff)
+                if not payoff:
+                    continue
+                payoff_content = payoff["content"]
+                try:
+                    unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+                        project_id, chapter_number
+                    )
+                    matched = None
+                    payoff_id = payoff.get("foreshadowing_id")
+                    if payoff_id is not None:
+                        matched = next((fs for fs in unresolved_foreshadowings if fs.id == payoff_id), None)
+                    if not matched:
                         for fs in unresolved_foreshadowings:
-                            if payoff_content.strip() in fs.content or fs.content in payoff_content.strip():
+                            if payoff_content in fs.content or fs.content in payoff_content:
                                 matched = fs
                                 break
 
-                        if matched:
-                            await foreshadowing_service.resolve_foreshadowing(
-                                foreshadowing_id=matched.id,
-                                resolved_chapter_id=chapter.id,
-                                resolved_chapter_number=chapter_number,
-                                resolution_text=payoff_content.strip(),
-                                resolution_type="direct",
+                    if matched:
+                        matched.target_reveal_chapter = chapter_number
+                        if payoff_content:
+                            previous_note = (matched.author_note or "").strip()
+                            schedule_note = f"[计划回收章]: 第{chapter_number}章"
+                            matched.author_note = (
+                                f"{previous_note}\n{schedule_note}".strip()
+                                if previous_note
+                                else schedule_note
                             )
-                            logger.info(f"伏笔回收: project={project_id}, chapter={chapter_number}, content={payoff_content[:50]}...")
-                        else:
-                            # 如果没有匹配到，记录日志但不创建新伏笔
-                            logger.info(f"未找到匹配的伏笔进行回收: {payoff_content[:50]}...")
-                    except Exception as fe:
-                        logger.warning(f"伏笔回收失败: {fe}")
+                        logger.info(
+                            "伏笔回收计划已更新: project=%s fs=%s target_chapter=%s content=%s...",
+                            project_id,
+                            matched.id,
+                            chapter_number,
+                            payoff_content[:50],
+                        )
+                    else:
+                        logger.info(f"未找到匹配的伏笔进行回收: {payoff_content[:50]}...")
+                except Exception as fe:
+                    logger.warning(f"伏笔回收失败: {fe}")
 
         await session.commit()
     except Exception as exc:
@@ -1549,8 +2474,16 @@ async def preview_chapters_outline(
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
     llm_service = LLMService(session)
+    style_rule_service = UserStyleRuleService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    personal_rules = await style_rule_service.get_effective_rules(
+        user_id=current_user.id,
+        project_id=project_id,
+        rule_types=["general", "outline_generation"],
+        limit=20,
+    )
+    personal_rules_text = _format_personal_rules_section(personal_rules)
 
     # 获取蓝图信息
     project_schema = await novel_service._serialize_project(project)
@@ -1607,6 +2540,8 @@ async def preview_chapters_outline(
 [已有章节大纲]
 {existing_outlines_text}
 {user_hint_section}
+[用户个人风格规则]
+{personal_rules_text}
 [生成上下文]
 - 起始章节：第 {request.start_chapter} 章
 - 生成章节数：{request.num_chapters} 章
@@ -1684,6 +2619,8 @@ async def preview_chapters_outline(
 以下元素已经在前面为你设计好了，请在对应章节安排它们的登场：
 {new_elements_text}
 {user_hint_section}
+[用户个人风格规则]
+{personal_rules_text}
 [生成任务]
 - 总章节数：{total_chapters} 章
 - 当前位置：第 {request.start_chapter} 章（进度 {current_progress:.1f}%）
@@ -1737,19 +2674,28 @@ async def preview_chapters_outline(
             plant_list = foreshadowing_data.get("plant", [])
             payoff_list = foreshadowing_data.get("payoff", [])
 
-            for plant_content in plant_list:
-                if plant_content and isinstance(plant_content, str) and plant_content.strip():
-                    foreshadowing_plants.append({
-                        "chapter_number": chapter_number,
-                        "content": plant_content.strip()
-                    })
+            for raw_plant in plant_list:
+                plant = _normalize_foreshadowing_entry(raw_plant)
+                if not plant:
+                    continue
+                foreshadowing_plants.append({
+                    "chapter_number": chapter_number,
+                    "content": plant["content"],
+                    "target_reveal_chapter": plant.get("target_reveal_chapter"),
+                    "importance": plant.get("importance"),
+                    "keywords": plant.get("keywords", []),
+                })
 
-            for payoff_content in payoff_list:
-                if payoff_content and isinstance(payoff_content, str) and payoff_content.strip():
-                    foreshadowing_payoffs.append({
-                        "chapter_number": chapter_number,
-                        "content": payoff_content.strip()
-                    })
+            for raw_payoff in payoff_list:
+                payoff = _normalize_foreshadowing_entry(raw_payoff)
+                if not payoff:
+                    continue
+                foreshadowing_payoffs.append({
+                    "chapter_number": chapter_number,
+                    "content": payoff["content"],
+                    "foreshadowing_id": payoff.get("foreshadowing_id"),
+                    "keywords": payoff.get("keywords", []),
+                })
 
         return OutlinePreviewResponse(
             chapters=chapters_preview,
@@ -1780,6 +2726,7 @@ async def confirm_chapters_outline(
     """确认大纲 - 用户确认后保存到数据库"""
     novel_service = NovelService(session)
     foreshadowing_service = ForeshadowingService(session)
+    prompt_service = PromptService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     project_schema = await novel_service._serialize_project(project)
@@ -1849,50 +2796,20 @@ async def confirm_chapters_outline(
 
             await novel_service.update_blueprint_relationships(project_id, updated_relationships)
 
-        # 处理新地点和新势力 - 合并处理避免多次调用 update_blueprint_world_setting
+        # 处理新地点和新势力（统一写入独立表，不再写 world_setting JSON）
         new_locations = preview_data.get("new_locations", [])
         new_factions = preview_data.get("new_factions", [])
 
         if (new_locations or new_factions) and project_schema.blueprint:
-            existing_world = dict(project_schema.blueprint.world_setting or {})
-
-            # 处理地点
+            location_service = KeyLocationService(session)
             if new_locations:
-                existing_locations = list(existing_world.get("locations", []))
-                existing_location_names = {loc.get("name") for loc in existing_locations}
+                await location_service.upsert_locations(project_id, new_locations)
+                logger.info(f"新增地点（写入 key_locations 表）: {len(new_locations)} 条")
 
-                for loc in new_locations:
-                    if loc.get("name") and loc["name"] not in existing_location_names:
-                        existing_locations.append({
-                            "name": loc.get("name"),
-                            "description": loc.get("description", ""),
-                            "type": loc.get("type", ""),
-                            "first_appear_chapter": loc.get("first_appear_chapter")
-                        })
-                        logger.info(f"新增地点: {loc.get('name')}")
-
-                existing_world["locations"] = existing_locations
-
-            # 处理势力
+            faction_service = FactionService(session, prompt_service)
             if new_factions:
-                existing_factions = list(existing_world.get("factions", []))
-                existing_faction_names = {fac.get("name") for fac in existing_factions}
-
-                for fac in new_factions:
-                    if fac.get("name") and fac["name"] not in existing_faction_names:
-                        existing_factions.append({
-                            "name": fac.get("name"),
-                            "description": fac.get("description", ""),
-                            "leader": fac.get("leader", ""),
-                            "goals": fac.get("goals", ""),
-                            "first_appear_chapter": fac.get("first_appear_chapter")
-                        })
-                        logger.info(f"新增势力: {fac.get('name')}")
-
-                existing_world["factions"] = existing_factions
-
-            # 只调用一次更新
-            await novel_service.update_blueprint_world_setting(project_id, existing_world)
+                await faction_service.upsert_factions(project_id, new_factions)
+                logger.info(f"新增势力（写入 factions 表）: {len(new_factions)} 条")
 
         # 处理伏笔
         foreshadowing_plants = preview_data.get("foreshadowing_plants", [])
@@ -1937,20 +2854,22 @@ async def confirm_chapters_outline(
                     logger.error(f"章节 {chapter_number} 的 ID 为 None，无法创建伏笔")
                     continue
 
-                # 设置默认的预期回收章节和重要性
-                # importance: major (长期), minor (中期), subtle (短期)
-                # 根据内容长度简单判断重要性
-                if len(content) > 100:
-                    fs_importance = "major"
-                    fs_target_offset = 15  # 长期伏笔，15章后回收
-                elif len(content) > 50:
-                    fs_importance = "minor"
-                    fs_target_offset = 10  # 中期伏笔，10章后回收
-                else:
-                    fs_importance = "subtle"
-                    fs_target_offset = 5   # 短期伏笔，5章后回收
+                target_reveal = plant.get("target_reveal_chapter")
+                try:
+                    target_reveal = int(target_reveal) if target_reveal is not None else None
+                except (TypeError, ValueError):
+                    target_reveal = None
 
-                fs_target_reveal = chapter_number + fs_target_offset
+                fs_importance = plant.get("importance")
+                if isinstance(fs_importance, str):
+                    fs_importance = fs_importance.strip().lower()
+                if fs_importance not in {"major", "minor", "subtle"}:
+                    fs_importance = None
+
+                keywords = plant.get("keywords")
+                if not isinstance(keywords, list):
+                    keywords = []
+                keywords = [str(k).strip() for k in keywords if str(k).strip()]
 
                 await foreshadowing_service.create_foreshadowing(
                     project_id=project_id,
@@ -1958,9 +2877,10 @@ async def confirm_chapters_outline(
                     chapter_number=chapter_number,
                     content=content,
                     foreshadowing_type="hint",
+                    keywords=keywords,
                     is_manual=False,
                     ai_confidence=0.8,
-                    target_reveal_chapter=fs_target_reveal,
+                    target_reveal_chapter=target_reveal,
                     importance=fs_importance,
                 )
                 existing_fs_contents.add(content)  # 添加到已存在集合，防止批量新增时重复
@@ -1985,20 +2905,37 @@ async def confirm_chapters_outline(
                     project_id, chapter_number
                 )
                 matched = None
+                payoff_id = payoff.get("foreshadowing_id")
+                try:
+                    payoff_id = int(payoff_id) if payoff_id is not None else None
+                except (TypeError, ValueError):
+                    payoff_id = None
+                if payoff_id is not None:
+                    matched = next((fs for fs in unresolved_foreshadowings if fs.id == payoff_id), None)
                 for fs in unresolved_foreshadowings:
+                    if matched:
+                        break
                     if content in fs.content or fs.content in content:
                         matched = fs
                         break
 
                 if matched:
-                    await foreshadowing_service.resolve_foreshadowing(
-                        foreshadowing_id=matched.id,
-                        resolved_chapter_id=chapter_map[chapter_number].id,
-                        resolved_chapter_number=chapter_number,
-                        resolution_text=content,
-                        resolution_type="direct",
+                    matched.target_reveal_chapter = chapter_number
+                    if content:
+                        previous_note = (matched.author_note or "").strip()
+                        schedule_note = f"[计划回收章]: 第{chapter_number}章"
+                        matched.author_note = (
+                            f"{previous_note}\n{schedule_note}".strip()
+                            if previous_note
+                            else schedule_note
+                        )
+                    logger.info(
+                        "伏笔回收计划已更新: project=%s fs=%s target_chapter=%s content=%s...",
+                        project_id,
+                        matched.id,
+                        chapter_number,
+                        content[:50],
                     )
-                    logger.info(f"伏笔回收成功: project={project_id}, chapter={chapter_number}, content={content[:50]}...")
                 else:
                     logger.info(f"未找到匹配的伏笔进行回收: {content[:50]}...")
             except Exception as fe:

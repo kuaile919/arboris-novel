@@ -382,10 +382,12 @@ class LLMService:
                 user_id,
                 finish_reason,
             )
-            raise HTTPException(
-                status_code=500,
-                detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员"
-            )
+            if finish_reason in ("length", "max_tokens"):
+                detail = "AI 输出被长度限制截断且未返回正文，请稍后重试或适当提高 max_tokens"
+            else:
+                detail = f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试"
+            # 空响应通常是上游临时异常，统一返回 503 以便上层重试或降级。
+            raise HTTPException(status_code=503, detail=detail)
 
         return full_response, finish_reason
 

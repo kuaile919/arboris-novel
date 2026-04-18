@@ -78,7 +78,7 @@ def _clean_string(text: str, parse_json: bool = True) -> str:
     )
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -95,12 +95,21 @@ from ..models import (
 )
 from ..models.key_location import KeyLocation
 from ..models.faction import Faction
+from ..models.foreshadowing import (
+    ForeshadowingAnalysis,
+    Foreshadowing,
+    ForeshadowingReminder,
+    ForeshadowingResolution,
+    ForeshadowingStatusHistory,
+)
+from ..models.chapter_blueprint import ChapterBlueprint
 from ..repositories.novel_repository import NovelRepository
 from ..schemas.admin import AdminNovelSummary
 from ..schemas.novel import (
     Blueprint,
     Chapter as ChapterSchema,
     ChapterGenerationStatus,
+    ChapterRuntimeStatus,
     ChapterOutline as ChapterOutlineSchema,
     NovelProject as NovelProjectSchema,
     NovelProjectSummary,
@@ -115,6 +124,110 @@ class NovelService:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.repo = NovelRepository(session)
+
+    @staticmethod
+    def _split_world_setting_entities(
+        world_setting: Optional[Dict[str, Any]]
+    ) -> tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """拆分 world_setting 中的结构化实体，保留基础设定字段。"""
+        ws = dict(world_setting or {})
+        key_locations = ws.pop("key_locations", None)
+        locations = ws.pop("locations", None)
+        ws.pop("location", None)
+        factions = ws.pop("factions", None)
+
+        location_items_raw = key_locations if isinstance(key_locations, list) and key_locations else locations
+        location_items: List[Dict[str, Any]] = []
+        if isinstance(location_items_raw, list):
+            for item in location_items_raw:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                location_items.append(
+                    {
+                        "name": name,
+                        "description": item.get("description") or "",
+                        "location_type": item.get("location_type") or item.get("type"),
+                        "first_appear_chapter": item.get("first_appear_chapter"),
+                    }
+                )
+
+        faction_items: List[Dict[str, Any]] = []
+        if isinstance(factions, list):
+            for item in factions:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                faction_items.append(
+                    {
+                        "name": name,
+                        "description": item.get("description") or "",
+                        "first_appear_chapter": item.get("first_appear_chapter"),
+                    }
+                )
+
+        return ws, location_items, faction_items
+
+    async def _upsert_key_locations(self, project_id: str, items: List[Dict[str, Any]]) -> None:
+        for item in items:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            existing_result = await self.session.execute(
+                select(KeyLocation).where(
+                    KeyLocation.project_id == project_id,
+                    KeyLocation.name == name,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing:
+                if item.get("description") and not existing.description:
+                    existing.description = item["description"]
+                if item.get("location_type") and not existing.location_type:
+                    existing.location_type = item["location_type"]
+                if item.get("first_appear_chapter") is not None and existing.first_appear_chapter is None:
+                    existing.first_appear_chapter = item["first_appear_chapter"]
+            else:
+                self.session.add(
+                    KeyLocation(
+                        project_id=project_id,
+                        name=name,
+                        description=item.get("description") or "",
+                        location_type=item.get("location_type"),
+                        first_appear_chapter=item.get("first_appear_chapter"),
+                    )
+                )
+
+    async def _upsert_factions(self, project_id: str, items: List[Dict[str, Any]]) -> None:
+        for item in items:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            existing_result = await self.session.execute(
+                select(Faction).where(
+                    Faction.project_id == project_id,
+                    Faction.name == name,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing:
+                if item.get("description") and not existing.description:
+                    existing.description = item["description"]
+                if item.get("first_appear_chapter") is not None and existing.first_appear_chapter is None:
+                    existing.first_appear_chapter = item["first_appear_chapter"]
+            else:
+                self.session.add(
+                    Faction(
+                        project_id=project_id,
+                        name=name,
+                        description=item.get("description") or "",
+                        first_appear_chapter=item.get("first_appear_chapter"),
+                    )
+                )
 
     # ------------------------------------------------------------------
     # 项目与摘要
@@ -140,6 +253,16 @@ class NovelService:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该项目")
         return project
 
+    async def ensure_project_owner_light(self, project_id: str, user_id: int) -> None:
+        owner_result = await self.session.execute(
+            select(NovelProject.user_id).where(NovelProject.id == project_id)
+        )
+        owner_id = owner_result.scalar_one_or_none()
+        if owner_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+        if owner_id != user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该项目")
+
     async def get_project_schema(self, project_id: str, user_id: int) -> NovelProjectSchema:
         project = await self.ensure_project_owner(project_id, user_id)
         return await self._serialize_project(project)
@@ -161,6 +284,69 @@ class NovelService:
     ) -> ChapterSchema:
         project = await self.ensure_project_owner(project_id, user_id)
         return self._build_chapter_schema(project, chapter_number)
+
+    async def get_chapter_runtime_status(
+        self,
+        project_id: str,
+        user_id: int,
+        chapter_number: int,
+    ) -> ChapterRuntimeStatus:
+        await self.ensure_project_owner_light(project_id, user_id)
+
+        status_result = await self.session.execute(
+            select(
+                Chapter.chapter_number,
+                Chapter.status,
+                Chapter.word_count,
+                Chapter.updated_at,
+                Chapter.selected_version_id,
+                func.count(ChapterVersion.id).label("versions_count"),
+                func.count(ChapterEvaluation.id).label("evaluations_count"),
+            )
+            .outerjoin(ChapterVersion, ChapterVersion.chapter_id == Chapter.id)
+            .outerjoin(ChapterEvaluation, ChapterEvaluation.chapter_id == Chapter.id)
+            .where(
+                Chapter.project_id == project_id,
+                Chapter.chapter_number == chapter_number,
+            )
+            .group_by(
+                Chapter.id,
+                Chapter.chapter_number,
+                Chapter.status,
+                Chapter.word_count,
+                Chapter.updated_at,
+                Chapter.selected_version_id,
+            )
+        )
+        row = status_result.mappings().first()
+        if not row:
+            return ChapterRuntimeStatus(
+                chapter_number=chapter_number,
+                generation_status=ChapterGenerationStatus.NOT_GENERATED,
+            )
+
+        generation_status = row.get("status") or ChapterGenerationStatus.NOT_GENERATED.value
+        try:
+            enum_status = ChapterGenerationStatus(generation_status)
+        except ValueError:
+            enum_status = ChapterGenerationStatus.NOT_GENERATED
+
+        versions_count = int(row.get("versions_count") or 0)
+        evaluations_count = int(row.get("evaluations_count") or 0)
+        word_count = int(row.get("word_count") or 0)
+        selected_version_id = row.get("selected_version_id")
+        updated_at = row.get("updated_at")
+
+        return ChapterRuntimeStatus(
+            chapter_number=int(row.get("chapter_number") or chapter_number),
+            generation_status=enum_status,
+            word_count=word_count,
+            updated_at=updated_at.isoformat() if updated_at else None,
+            has_content=word_count > 0 or bool(selected_version_id),
+            versions_count=versions_count,
+            has_evaluation=evaluations_count > 0,
+            selected_version_id=int(selected_version_id) if selected_version_id else None,
+        )
 
     async def list_projects_for_user(self, user_id: int) -> List[NovelProjectSummary]:
         projects = await self.repo.list_by_user(user_id)
@@ -310,7 +496,10 @@ class NovelService:
         record.one_sentence_summary = blueprint.one_sentence_summary
         record.full_synopsis = blueprint.full_synopsis
         record.total_chapters = blueprint.total_chapters or 0
-        record.world_setting = blueprint.world_setting
+        sanitized_world_setting, location_items, faction_items = self._split_world_setting_entities(
+            blueprint.world_setting
+        )
+        record.world_setting = sanitized_world_setting
 
         await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
         for index, data in enumerate(blueprint.characters):
@@ -360,6 +549,8 @@ class NovelService:
                 )
             )
 
+        await self._upsert_key_locations(project_id, location_items)
+        await self._upsert_factions(project_id, faction_items)
         await self.session.commit()
         await self._touch_project(project_id)
 
@@ -391,9 +582,14 @@ class NovelService:
         if "total_chapters" in patch:
             blueprint.total_chapters = patch["total_chapters"] or 0
         if "world_setting" in patch and patch["world_setting"] is not None:
+            patch_world_setting, location_items, faction_items = self._split_world_setting_entities(
+                patch["world_setting"]
+            )
             # 创建新字典对象以触发 SQLAlchemy 的变更检测
             existing = blueprint.world_setting or {}
-            blueprint.world_setting = {**existing, **patch["world_setting"]}
+            blueprint.world_setting = {**existing, **patch_world_setting}
+            await self._upsert_key_locations(project_id, location_items)
+            await self._upsert_factions(project_id, faction_items)
         if "characters" in patch and patch["characters"] is not None:
             await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
             for index, data in enumerate(patch["characters"]):
@@ -577,20 +773,198 @@ class NovelService:
         await self._touch_project(chapter.project_id)
 
     async def delete_chapters(self, project_id: str, chapter_numbers: Iterable[int]) -> None:
+        chapter_numbers_set = {int(n) for n in chapter_numbers}
+        if not chapter_numbers_set:
+            return
+        chapter_numbers_list = sorted(chapter_numbers_set)
+
+        # 先删除与章节号强关联的数据
+        await self._cleanup_foreshadowing_for_deleted_chapters(project_id, chapter_numbers_list)
+        await self.session.execute(
+            delete(ChapterBlueprint).where(
+                ChapterBlueprint.project_id == project_id,
+                ChapterBlueprint.chapter_number.in_(chapter_numbers_list),
+            )
+        )
         await self.session.execute(
             delete(Chapter).where(
                 Chapter.project_id == project_id,
-                Chapter.chapter_number.in_(list(chapter_numbers)),
+                Chapter.chapter_number.in_(chapter_numbers_list),
             )
         )
         await self.session.execute(
             delete(ChapterOutline).where(
                 ChapterOutline.project_id == project_id,
-                ChapterOutline.chapter_number.in_(list(chapter_numbers)),
+                ChapterOutline.chapter_number.in_(chapter_numbers_list),
             )
         )
+        await self._cleanup_blueprint_entities_for_deleted_chapters(project_id, chapter_numbers_set)
         await self.session.commit()
         await self._touch_project(project_id)
+
+    async def _cleanup_foreshadowing_for_deleted_chapters(
+        self,
+        project_id: str,
+        chapter_numbers: List[int],
+    ) -> None:
+        # 删除“在被删章节回收”的回收记录
+        project_foreshadowing_ids = select(Foreshadowing.id).where(Foreshadowing.project_id == project_id)
+        await self.session.execute(
+            delete(ForeshadowingResolution).where(
+                ForeshadowingResolution.foreshadowing_id.in_(project_foreshadowing_ids),
+                ForeshadowingResolution.resolved_at_chapter_number.in_(chapter_numbers)
+            )
+        )
+        await self.session.execute(
+            delete(ForeshadowingStatusHistory).where(
+                ForeshadowingStatusHistory.foreshadowing_id.in_(project_foreshadowing_ids),
+                ForeshadowingStatusHistory.chapter_number.in_(chapter_numbers),
+            )
+        )
+
+        # 删除“埋设在被删章节”的伏笔（其提醒会因外键级联删除）
+        fs_ids_result = await self.session.execute(
+            select(Foreshadowing.id).where(
+                Foreshadowing.project_id == project_id,
+                Foreshadowing.chapter_number.in_(chapter_numbers),
+            )
+        )
+        fs_ids = [row[0] for row in fs_ids_result.all()]
+        if fs_ids:
+            await self.session.execute(
+                delete(ForeshadowingReminder).where(ForeshadowingReminder.foreshadowing_id.in_(fs_ids))
+            )
+            await self.session.execute(
+                delete(ForeshadowingResolution).where(ForeshadowingResolution.foreshadowing_id.in_(fs_ids))
+            )
+            await self.session.execute(
+                delete(ForeshadowingStatusHistory).where(ForeshadowingStatusHistory.foreshadowing_id.in_(fs_ids))
+            )
+            await self.session.execute(delete(Foreshadowing).where(Foreshadowing.id.in_(fs_ids)))
+
+        # 对“回收章被删除”的伏笔，回退为未回收状态并清空计划回收章
+        resolved_result = await self.session.execute(
+            select(Foreshadowing).where(
+                Foreshadowing.project_id == project_id,
+                or_(
+                    Foreshadowing.resolved_chapter_number.in_(chapter_numbers),
+                    Foreshadowing.target_reveal_chapter.in_(chapter_numbers),
+                ),
+            )
+        )
+        for fs in resolved_result.scalars().all():
+            if fs.resolved_chapter_number in chapter_numbers:
+                fs.resolved_chapter_number = None
+                fs.resolved_chapter_id = None
+                if (fs.status or "").lower() in {"resolved", "revealed", "partial"}:
+                    fs.status = "planted"
+            if fs.target_reveal_chapter in chapter_numbers:
+                fs.target_reveal_chapter = None
+
+        # 删除分析缓存，避免统计显示陈旧数据
+        await self.session.execute(
+            delete(ForeshadowingAnalysis).where(ForeshadowingAnalysis.project_id == project_id)
+        )
+
+    async def _cleanup_blueprint_entities_for_deleted_chapters(
+        self,
+        project_id: str,
+        deleted_chapters: set[int],
+    ) -> None:
+        remaining_text = await self._build_remaining_chapter_text(project_id, deleted_chapters)
+
+        # 角色：仅删除首次出现在被删章节且在剩余章节未被引用的角色
+        chars_result = await self.session.execute(
+            select(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id)
+        )
+        stale_char_names: set[str] = set()
+        for char in chars_result.scalars().all():
+            first_appear = self._parse_first_appear_from_extra(char.extra)
+            if first_appear not in deleted_chapters:
+                continue
+            if char.is_protagonist:
+                continue
+            if self._is_name_referenced(char.name, remaining_text):
+                continue
+            stale_char_names.add(char.name)
+            await self.session.delete(char)
+
+        if stale_char_names:
+            await self.session.execute(
+                delete(BlueprintRelationship).where(
+                    BlueprintRelationship.project_id == project_id,
+                    or_(
+                        BlueprintRelationship.character_from.in_(list(stale_char_names)),
+                        BlueprintRelationship.character_to.in_(list(stale_char_names)),
+                    ),
+                )
+            )
+
+        # 地点：首次出现在被删章节且在剩余章节未被引用则删除
+        loc_result = await self.session.execute(
+            select(KeyLocation).where(KeyLocation.project_id == project_id)
+        )
+        for loc in loc_result.scalars().all():
+            if loc.first_appear_chapter not in deleted_chapters:
+                continue
+            if self._is_name_referenced(loc.name, remaining_text):
+                continue
+            await self.session.delete(loc)
+
+        # 势力：首次出现在被删章节且在剩余章节未被引用则删除
+        fac_result = await self.session.execute(
+            select(Faction).where(Faction.project_id == project_id)
+        )
+        for fac in fac_result.scalars().all():
+            if fac.first_appear_chapter not in deleted_chapters:
+                continue
+            if self._is_name_referenced(fac.name, remaining_text):
+                continue
+            await self.session.delete(fac)
+
+    async def _build_remaining_chapter_text(self, project_id: str, deleted_chapters: set[int]) -> str:
+        outlines_result = await self.session.execute(
+            select(ChapterOutline).where(
+                ChapterOutline.project_id == project_id,
+                ~ChapterOutline.chapter_number.in_(list(deleted_chapters)),
+            )
+        )
+        chapters_result = await self.session.execute(
+            select(Chapter).where(
+                Chapter.project_id == project_id,
+                ~Chapter.chapter_number.in_(list(deleted_chapters)),
+            )
+        )
+
+        parts: List[str] = []
+        for outline in outlines_result.scalars().all():
+            if outline.title:
+                parts.append(str(outline.title))
+            if outline.summary:
+                parts.append(str(outline.summary))
+        for chapter in chapters_result.scalars().all():
+            if chapter.real_summary:
+                parts.append(str(chapter.real_summary))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _parse_first_appear_from_extra(extra: Optional[Dict[str, Any]]) -> Optional[int]:
+        if not isinstance(extra, dict):
+            return None
+        raw = extra.get("first_appear_chapter")
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_name_referenced(name: Optional[str], corpus: str) -> bool:
+        if not name:
+            return False
+        token = str(name).strip()
+        if not token:
+            return False
+        return token in corpus
 
     async def update_blueprint_characters(self, project_id: str, characters: List) -> None:
         """更新蓝图中的角色列表"""
@@ -685,7 +1059,10 @@ class NovelService:
             blueprint = NovelBlueprint(project_id=project_id)
             self.session.add(blueprint)
 
-        blueprint.world_setting = world_setting
+        sanitized_world_setting, location_items, faction_items = self._split_world_setting_entities(world_setting)
+        blueprint.world_setting = sanitized_world_setting
+        await self._upsert_key_locations(project_id, location_items)
+        await self._upsert_factions(project_id, faction_items)
         await self.session.commit()
         await self._touch_project(project_id)
 
@@ -726,6 +1103,42 @@ class NovelService:
         ]
 
         blueprint_schema = self._build_blueprint_schema(project)
+        if blueprint_schema:
+            _loc_result = await self.session.execute(
+                select(KeyLocation)
+                .where(KeyLocation.project_id == project.id)
+                .order_by(
+                    KeyLocation.first_appear_chapter.is_(None),
+                    KeyLocation.first_appear_chapter.asc(),
+                    KeyLocation.id.asc(),
+                )
+            )
+            _fac_result = await self.session.execute(
+                select(Faction).where(Faction.project_id == project.id)
+            )
+            ws = dict(blueprint_schema.world_setting or {})
+            ws["key_locations"] = [
+                {
+                    "id": loc.id,
+                    "name": loc.name,
+                    "description": loc.description or "",
+                    "type": loc.location_type,
+                    "location_type": loc.location_type,
+                    "first_appear_chapter": loc.first_appear_chapter,
+                }
+                for loc in _loc_result.scalars().all()
+            ]
+            ws["factions"] = [
+                {
+                    "id": fac.id,
+                    "name": fac.name,
+                    "description": fac.description or "",
+                    "faction_type": fac.faction_type,
+                    "first_appear_chapter": fac.first_appear_chapter,
+                }
+                for fac in _fac_result.scalars().all()
+            ]
+            blueprint_schema.world_setting = ws
 
         outlines_map = {outline.chapter_number: outline for outline in project.outlines}
         chapters_map = {chapter.chapter_number: chapter for chapter in project.chapters}
