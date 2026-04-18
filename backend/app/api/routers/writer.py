@@ -2685,6 +2685,11 @@ async def apply_chapter_outline_converse(
             name = (char.get("name") or "").strip()
             if not name or name in existing_names:
                 continue
+            inferred_first_appear = _infer_first_appear_from_outline(
+                project_schema.blueprint.chapter_outline,
+                name,
+                request.chapter_number,
+            )
             updated_characters.append(
                 {
                     "name": name,
@@ -2693,7 +2698,7 @@ async def apply_chapter_outline_converse(
                     "personality": char.get("personality", ""),
                     "goals": char.get("goals", ""),
                     "abilities": char.get("abilities", ""),
-                    "first_appear_chapter": request.chapter_number,
+                    "first_appear_chapter": inferred_first_appear,
                 }
             )
             existing_names.add(name)
@@ -2866,6 +2871,29 @@ def _normalize_foreshadowing_entries(raw_items: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _infer_first_appear_from_outline(
+    chapter_outline: Optional[List[Any]],
+    name: str,
+    fallback_chapter: int,
+) -> int:
+    """根据章节标题/摘要兜底推断角色最早出现章。"""
+    if not chapter_outline or not name:
+        return fallback_chapter
+    target = name.strip()
+    if not target:
+        return fallback_chapter
+
+    for ch in sorted(chapter_outline, key=lambda item: getattr(item, "chapter_number", 0)):
+        ch_no = getattr(ch, "chapter_number", None)
+        if not isinstance(ch_no, int):
+            continue
+        title = str(getattr(ch, "title", "") or "")
+        summary = str(getattr(ch, "summary", "") or "")
+        if target in title or target in summary:
+            return ch_no
+    return fallback_chapter
+
+
 async def _get_chapter_outline_converse_context_data(
     *,
     novel_service: NovelService,
@@ -2897,10 +2925,21 @@ async def _get_chapter_outline_converse_context_data(
         for char in project_schema.blueprint.characters or []:
             if not isinstance(char, dict):
                 continue
-            if _to_int(char.get("first_appear_chapter")) == chapter_number:
+            if _to_int(char.get("first_appear_chapter")) != chapter_number:
+                continue
+            name = str(char.get("name") or "").strip()
+            # 历史数据可能把首登章记录偏后；若前文章节已出现同名，当前章不应算“新增”
+            inferred_first = _infer_first_appear_from_outline(
+                project_schema.blueprint.chapter_outline,
+                name,
+                chapter_number,
+            )
+            if inferred_first < chapter_number:
+                continue
+            if name:
                 chapter_characters.append(
                     {
-                        "name": str(char.get("name") or ""),
+                        "name": name,
                         "description": str(char.get("description") or ""),
                         "first_appear_chapter": chapter_number,
                     }

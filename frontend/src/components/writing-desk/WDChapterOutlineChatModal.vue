@@ -64,7 +64,11 @@
               <h4 class="font-medium text-gray-700 mb-1">新增人物</h4>
               <div v-if="viewCharacters.length" class="space-y-1">
                 <div v-for="(item, i) in viewCharacters" :key="`c-${i}`" class="text-gray-700">
-                  {{ item.name }}<span v-if="item.description"> - {{ item.description }}</span>
+                  {{ item.name }}
+                  <span v-if="item.first_appear_chapter" class="text-xs text-gray-500 ml-1">
+                    （首登：第{{ item.first_appear_chapter }}章）
+                  </span>
+                  <span v-if="item.description"> - {{ item.description }}</span>
                 </div>
               </div>
               <div v-else class="text-gray-400">暂无</div>

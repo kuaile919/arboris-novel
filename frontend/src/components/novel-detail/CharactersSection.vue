@@ -32,6 +32,12 @@
               <h3 class="text-xl font-bold text-slate-900">{{ character.name || '未命名角色' }}</h3>
               <div class="flex items-center gap-2">
                 <p v-if="character.identity" class="text-sm text-indigo-500 font-medium">{{ character.identity }}</p>
+                <span
+                  v-if="character.first_appear_chapter"
+                  class="px-2 py-0.5 text-xs font-medium text-indigo-600 bg-indigo-50 rounded-full"
+                >
+                  首登 第{{ character.first_appear_chapter }}章
+                </span>
                 <span v-if="character.is_protagonist" class="px-2 py-0.5 text-xs font-semibold text-white bg-purple-600 rounded-full">主角</span>
               </div>
             </div>
@@ -69,6 +75,7 @@ import { computed } from 'vue'
 interface CharacterItem {
   name?: string
   identity?: string
+  first_appear_chapter?: number
   personality?: string
   goals?: string
   abilities?: string
