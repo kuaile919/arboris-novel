@@ -19,6 +19,14 @@
           生成过程通常需要2分钟以上，请耐心等待。您可以随时离开此页面，生成完成后再回来查看。
         </p>
       </div>
+      <div v-if="status === 'generating'" class="mt-5 flex items-center justify-center gap-3">
+        <button type="button" class="md-btn md-btn-outlined md-ripple" @click="$emit('cancelGeneration')">
+          取消生成
+        </button>
+        <button type="button" class="md-btn md-btn-filled md-ripple" @click="$emit('regenerateChapter')">
+          重新生成
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -33,6 +41,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+defineEmits(['cancelGeneration', 'regenerateChapter'])
 
 const statusText = computed(() => {
   switch (props.status) {

@@ -37,6 +37,7 @@
           @generateChapter="$emit('generateChapter', $event)"
           @showVersionSelector="$emit('showVersionSelector')"
           @regenerateChapter="confirmRegenerateChapter"
+          @cancelGeneration="$emit('cancelChapterGeneration')"
           @evaluateChapter="$emit('evaluateChapter')"
           @showEvaluationDetail="$emit('showEvaluationDetail')"
           @openEditModal="openEditModal"
@@ -179,7 +180,8 @@ const emit = defineEmits([
   'showVersionSelector',
   'showEvaluationDetail',
   'fetchChapterStatus',
-  'editChapter'
+  'editChapter',
+  'cancelChapterGeneration'
 ])
 
 const confirmRegenerateChapter = async () => {

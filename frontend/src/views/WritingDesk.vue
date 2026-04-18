@@ -75,6 +75,7 @@
           @show-evaluation-detail="showEvaluationDetailModal = true"
           @fetch-chapter-status="fetchChapterStatus"
           @edit-chapter="editChapterContent"
+          @cancel-chapter-generation="cancelChapterGeneration"
           />
         </div>
       </div>
@@ -518,6 +519,25 @@ const regenerateChapter = async () => {
   if (selectedChapterNumber.value !== null) {
     await generateChapter(selectedChapterNumber.value)
   }
+}
+
+const cancelChapterGeneration = async () => {
+  if (!project.value || selectedChapterNumber.value === null) return
+
+  const confirmed = await globalAlert.showConfirm(
+    '将停止当前页面等待并恢复章节状态。若后台已在生成中，稍后刷新仍可能看到生成结果。是否继续？',
+    '取消生成'
+  )
+  if (!confirmed) return
+
+  const chapter = project.value.chapters.find(ch => ch.chapter_number === selectedChapterNumber.value)
+  if (chapter && (chapter.generation_status === 'generating' || chapter.generation_status === 'evaluating' || chapter.generation_status === 'selecting')) {
+    chapter.generation_status = chapter.content ? 'successful' : 'not_generated'
+  }
+  generatingChapter.value = null
+  chapterGenerationResult.value = null
+  selectedVersionIndex.value = 0
+  globalAlert.showSuccess('已取消当前页面等待', '操作成功')
 }
 
 const selectVersion = async (versionIndex: number) => {

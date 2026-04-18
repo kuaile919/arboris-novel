@@ -1614,15 +1614,12 @@ async def generate_chapter(
     # ========== 6. L3 Writer: 生成正文 ==========
     async def _generate_single_version(idx: int, version_style_hint: Optional[str] = None) -> Dict:
         """生成单个版本，支持差异化风格提示"""
-        max_version_attempts = 3
-        attempt_feedback = ""
+        max_version_attempts = 1
         for attempt in range(1, max_version_attempts + 1):
             try:
                 final_prompt_input = prompt_input
                 if version_style_hint:
                     final_prompt_input += f"\n\n[版本风格提示]\n{version_style_hint}"
-                if attempt_feedback:
-                    final_prompt_input += f"\n\n[上次未通过原因]\n{attempt_feedback}\n请整章重写并逐条补齐。"
 
                 generation_temperature = 0.78 if attempt == 1 else 0.72
                 generation_max_tokens = 3200
@@ -1710,69 +1707,16 @@ async def generate_chapter(
                     must_payoff_items=due_payoff_items,
                 )
                 if not contract_check["passed"]:
-                    lines = ["检测到本章未满足硬约束："]
-                    if not contract_check.get("outline_covered", False):
-                        lines.append("1. 未充分覆盖本章大纲目标")
-                        for point in contract_check.get("missing_outline_points", [])[:5]:
-                            lines.append(f"   - 缺失点：{point}")
-                    missing_plants = contract_check.get("missing_plants", [])
-                    if missing_plants:
-                        lines.append("2. 未覆盖的“必埋伏笔”：")
-                        for item in missing_plants:
-                            lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
-                    missing_payoffs = contract_check.get("missing_payoffs", [])
-                    if missing_payoffs:
-                        lines.append("3. 未覆盖的“必收伏笔”：")
-                        for item in missing_payoffs:
-                            lines.append(f"   - 伏笔#{item.get('id')} 内容：{item.get('content')}")
-
-                    contract_violations_text = "\n".join(lines)
-
-                    logger.warning(
-                        "项目 %s 第 %s 章版本 %s 第 %s 轮未满足硬约束: outline_covered=%s missing_plants=%s missing_payoffs=%s，触发定向重写",
+                    logger.info(
+                        "项目 %s 第 %s 章版本 %s 第 %s 轮未满足硬约束: outline_covered=%s missing_plants=%s missing_payoffs=%s，速度优先模式直接返回",
                         project_id,
                         request.chapter_number,
                         idx + 1,
                         attempt,
                         contract_check.get("outline_covered", False),
-                        len(missing_plants),
-                        len(missing_payoffs),
+                        len(contract_check.get("missing_plants", [])),
+                        len(contract_check.get("missing_payoffs", [])),
                     )
-                    final_content = await _rewrite_with_guardrails(
-                        llm_service=llm_service,
-                        prompt_service=prompt_service,
-                        original_text=final_content,
-                        chapter_mission=chapter_mission,
-                        violations_text=contract_violations_text,
-                        user_id=current_user.id,
-                        min_chars=chapter_min_chars,
-                        max_chars=chapter_hard_max_chars,
-                        max_tokens=3200,
-                    )
-                    contract_check = await _check_chapter_execution_contract(
-                        llm_service=llm_service,
-                        user_id=current_user.id,
-                        chapter_number=request.chapter_number,
-                        generated_text=final_content,
-                        outline_title=outline_title,
-                        outline_summary=outline_summary,
-                        must_plant_items=must_plant_items,
-                        must_payoff_items=due_payoff_items,
-                    )
-
-                    if not contract_check["passed"]:
-                        if attempt >= max_version_attempts:
-                            raise HTTPException(
-                                status_code=422,
-                                detail=(
-                                    f"第{request.chapter_number}章版本{idx + 1}连续{max_version_attempts}轮未满足硬约束："
-                                    f"outline_covered={contract_check.get('outline_covered', False)} "
-                                    f"missing_plants={len(contract_check.get('missing_plants', []))} "
-                                    f"missing_payoffs={len(contract_check.get('missing_payoffs', []))}"
-                                ),
-                            )
-                        attempt_feedback = contract_violations_text
-                        continue
 
                 def _extract_text(value: object) -> Optional[str]:
                     if not value:
