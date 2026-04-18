@@ -225,6 +225,51 @@
                     </div>
                   </div>
 
+                  <!-- 大纲与伏笔执行校验总结 -->
+                  <div
+                    v-if="evaluationData.execution_summary && evaluationData.execution_summary.version_results"
+                    class="border border-slate-200 rounded-xl p-4"
+                  >
+                    <h5 class="text-base font-bold text-slate-900 mb-3">大纲与伏笔执行校验总结</h5>
+                    <div class="space-y-3">
+                      <div
+                        v-for="(check, versionName) in evaluationData.execution_summary.version_results"
+                        :key="`outline-check-${String(versionName)}`"
+                        class="rounded-lg border p-3"
+                        :class="check.passed ? 'bg-green-50 border-green-100' : 'bg-red-50 border-red-100'"
+                      >
+                        <p class="text-sm font-semibold text-slate-900">
+                          {{ getVersionLabel(versionName) }}
+                          <span :class="check.passed ? 'text-green-700' : 'text-red-700'">
+                            （{{ check.passed ? '已覆盖' : '未完全覆盖' }}）
+                          </span>
+                        </p>
+                        <p class="mt-1 text-xs text-slate-700 leading-relaxed">
+                          大纲覆盖：{{ check.outline_covered ? '是' : '否' }}
+                          ｜ 已覆盖必埋：{{ getCoveredPlants(check).length }}
+                          ｜ 已覆盖必收：{{ getCoveredPayoffs(check).length }}
+                          ｜ 缺失必埋：{{ check.missing_plants?.length || 0 }}
+                          ｜ 缺失必收：{{ check.missing_payoffs?.length || 0 }}
+                        </p>
+                        <p v-if="check.missing_outline_points?.length" class="mt-1 text-xs text-slate-700 leading-relaxed">
+                          大纲缺失点：{{ check.missing_outline_points.join('；') }}
+                        </p>
+                        <p v-if="getCoveredPlants(check).length" class="mt-1 text-xs text-slate-700 leading-relaxed">
+                          已覆盖必埋：{{ formatCoveredItems(getCoveredPlants(check)) }}
+                        </p>
+                        <p v-if="getCoveredPayoffs(check).length" class="mt-1 text-xs text-slate-700 leading-relaxed">
+                          已覆盖必收：{{ formatCoveredItems(getCoveredPayoffs(check)) }}
+                        </p>
+                        <p v-if="check.missing_plants?.length" class="mt-1 text-xs text-slate-700 leading-relaxed">
+                          未覆盖必埋：{{ formatMissingItems(check.missing_plants) }}
+                        </p>
+                        <p v-if="check.missing_payoffs?.length" class="mt-1 text-xs text-slate-700 leading-relaxed">
+                          未覆盖必收：{{ formatMissingItems(check.missing_payoffs) }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
                   <!-- 各版本详细评审 -->
                   <div v-if="evaluationData.evaluation" class="space-y-4">
                     <div v-for="(versionEval, versionKey) in evaluationData.evaluation" :key="versionKey"
@@ -606,6 +651,62 @@ const getVersionLabel = (versionKey: string | number): string => {
 const isSelectedVersion = (versionKey: string | number, bestChoice?: number): boolean => {
   if (!bestChoice) return false
   return getVersionNumber(versionKey) === bestChoice
+}
+
+interface ExecutionItem {
+  id?: number
+  name?: string
+  content?: string
+}
+
+interface ExecutionCheck {
+  passed?: boolean
+  outline_covered?: boolean
+  missing_outline_points?: string[]
+  missing_plants?: ExecutionItem[]
+  missing_payoffs?: ExecutionItem[]
+}
+
+const formatMissingItems = (items: ExecutionItem[] = []): string => {
+  if (!items.length) return '无'
+  return items
+    .map((item) => {
+      const label = item.name?.trim() || (item.id ? `#${item.id}` : '未命名')
+      const content = (item.content || '').trim()
+      return content ? `${label}（${content}）` : label
+    })
+    .join('；')
+}
+
+const getCoveredItems = (requiredItems: ExecutionItem[] = [], missingItems: ExecutionItem[] = []) => {
+  if (!requiredItems.length) return []
+  const missingIds = new Set(
+    missingItems.map((item) => item.id).filter((id): id is number => typeof id === 'number')
+  )
+  return requiredItems.filter((item) => !(typeof item.id === 'number' && missingIds.has(item.id)))
+}
+
+const getCoveredPlants = (check: ExecutionCheck) => {
+  const required = evaluationData.value?.execution_summary?.required_plants || []
+  const missing = check?.missing_plants || []
+  return getCoveredItems(required, missing)
+}
+
+const getCoveredPayoffs = (check: ExecutionCheck) => {
+  const required = evaluationData.value?.execution_summary?.required_payoffs || []
+  const missing = check?.missing_payoffs || []
+  return getCoveredItems(required, missing)
+}
+
+const formatCoveredItems = (items: ExecutionItem[] = []): string => {
+  if (!items.length) return '无'
+  return items
+    .map((item) => {
+      const label = item.name?.trim() || (item.id ? `#${item.id}` : '未命名')
+      const content = (item.content || '').trim()
+      return content ? `${label}（${content}）` : label
+    })
+    .join('；')
 }
 
 // 渲染 Markdown
