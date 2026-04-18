@@ -18,6 +18,36 @@
       <p class="text-slate-600 leading-7 whitespace-pre-line">{{ worldSetting.core_rules || '暂无' }}</p>
     </div>
 
+    <div v-if="extraWorldSettings.length" class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-center justify-between gap-4 mb-4">
+        <h3 class="text-lg font-semibold text-slate-900">扩展设定</h3>
+      </div>
+      <ul class="space-y-4">
+        <li
+          v-for="item in extraWorldSettings"
+          :key="item.key"
+          class="bg-slate-50 border border-slate-100 rounded-xl p-4"
+        >
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <strong class="text-slate-800">{{ item.label }}</strong>
+            <button
+              v-if="editable"
+              type="button"
+              class="text-gray-400 hover:text-indigo-600 transition-colors"
+              @click="emitEdit(`world_setting.${item.key}`, item.label, item.raw)"
+            >
+              <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                <path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+          <pre v-if="item.multiline" class="text-xs text-slate-600 whitespace-pre-wrap leading-6">{{ item.text }}</pre>
+          <p v-else class="text-sm text-slate-600 leading-6 whitespace-pre-wrap">{{ item.text }}</p>
+        </li>
+      </ul>
+    </div>
+
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- 关键地点 -->
       <div class="bg-white/95 rounded-2xl shadow-sm border border-slate-200 p-6">
@@ -183,6 +213,16 @@ const emit = defineEmits<{
 
 const worldSetting = computed(() => props.data?.world_setting || {})
 
+const EXTRA_FIELD_LABELS: Record<string, string> = {
+  currency_system: '货币体系',
+  current_system: '货币体系（旧字段）',
+  power_system: '力量体系',
+  magic_system: '法术体系',
+  cultivation_system: '修炼体系',
+  social_rules: '社会规则',
+  taboo_rules: '禁忌规则',
+}
+
 // 同步状态
 const syncLoading = ref(false)
 const syncResult = ref<SyncWorldSettingResult | null>(null)
@@ -231,6 +271,45 @@ const normalizeListWithChapter = (source: any): LocationItem[] => {
 interface LocationItem extends ListItem {
   first_appear_chapter?: number
 }
+
+const isEmptyValue = (value: any) => {
+  if (value === null || value === undefined) return true
+  if (typeof value === 'string') return value.trim() === ''
+  if (Array.isArray(value)) return value.length === 0
+  if (typeof value === 'object') return Object.keys(value).length === 0
+  return false
+}
+
+const formatExtraFieldLabel = (key: string) => {
+  return EXTRA_FIELD_LABELS[key] || key.replace(/_/g, ' ')
+}
+
+const formatExtraFieldValue = (value: any) => {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch (error) {
+    return String(value ?? '')
+  }
+}
+
+const extraWorldSettings = computed(() => {
+  const ws = worldSetting.value
+  const ignored = new Set(['core_rules', 'key_locations', 'factions', 'locations', 'location'])
+  return Object.entries(ws)
+    .filter(([key, value]) => !ignored.has(key) && !isEmptyValue(value))
+    .map(([key, value]) => {
+      const text = formatExtraFieldValue(value)
+      return {
+        key,
+        label: formatExtraFieldLabel(key),
+        text,
+        multiline: typeof value === 'object' || text.includes('\n') || text.length > 120,
+        raw: value,
+      }
+    })
+})
 
 const locations = computed(() => {
   return normalizeListWithChapter(props.data?.key_locations || [])

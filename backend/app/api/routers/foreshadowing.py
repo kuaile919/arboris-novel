@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.session import get_session
 from ...services.foreshadowing_service import ForeshadowingService
+from ...services.novel_service import NovelService
 from ...models.foreshadowing import Foreshadowing, ForeshadowingReminder, ForeshadowingAnalysis
 from ...core.dependencies import get_current_user
 
@@ -50,6 +51,15 @@ class ForeshadowingResponse(BaseModel):
     ai_confidence: Optional[float]
     author_note: Optional[str]
     created_at: str
+
+
+class ForeshadowingUpdate(BaseModel):
+    """编辑伏笔请求（仅未回收）。"""
+    content: Optional[str] = None
+    target_reveal_chapter: Optional[int] = None
+    importance: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    author_note: Optional[str] = None
 
 
 class ReminderResponse(BaseModel):
@@ -187,6 +197,76 @@ async def resolve_foreshadowing(
         }
     except Exception as e:
         logger.exception(f"标记伏笔回收失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/{project_id}/foreshadowings/{foreshadowing_id}", response_model=ForeshadowingResponse)
+async def update_foreshadowing(
+    project_id: str,
+    foreshadowing_id: int,
+    data: ForeshadowingUpdate,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(get_current_user),
+):
+    """编辑伏笔（仅未回收）。"""
+    try:
+        novel_service = NovelService(session)
+        await novel_service.ensure_project_owner(project_id, current_user.id)
+
+        payload = data.model_dump(exclude_unset=True)
+        if not payload:
+            raise HTTPException(status_code=400, detail="至少提供一个可更新字段")
+
+        service = ForeshadowingService(session)
+        foreshadowing = await service.update_foreshadowing(
+            project_id=project_id,
+            foreshadowing_id=foreshadowing_id,
+            **payload,
+        )
+        await session.commit()
+
+        return ForeshadowingResponse(
+            id=foreshadowing.id,
+            project_id=foreshadowing.project_id,
+            chapter_number=foreshadowing.chapter_number,
+            content=foreshadowing.content,
+            type=foreshadowing.type,
+            status=foreshadowing.status,
+            resolved_chapter_number=foreshadowing.resolved_chapter_number,
+            is_manual=foreshadowing.is_manual,
+            ai_confidence=foreshadowing.ai_confidence,
+            author_note=foreshadowing.author_note,
+            created_at=foreshadowing.created_at.isoformat(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"编辑伏笔失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{project_id}/foreshadowings/{foreshadowing_id}")
+async def delete_foreshadowing(
+    project_id: str,
+    foreshadowing_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_user = Depends(get_current_user),
+):
+    """删除伏笔（仅未回收）。"""
+    try:
+        novel_service = NovelService(session)
+        await novel_service.ensure_project_owner(project_id, current_user.id)
+
+        service = ForeshadowingService(session)
+        await service.delete_foreshadowing(project_id=project_id, foreshadowing_id=foreshadowing_id)
+        await session.commit()
+        return {"status": "success", "message": "伏笔已删除"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception(f"删除伏笔失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

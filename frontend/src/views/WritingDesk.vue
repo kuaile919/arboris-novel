@@ -45,6 +45,7 @@
           :generating-chapter="generatingChapter"
           :evaluating-chapter="evaluatingChapter"
           :is-generating-outline="isGeneratingOutline"
+          :mark-updating-chapter-number="markUpdatingChapterNumber"
           @close-sidebar="closeSidebar"
           @select-chapter="selectChapter"
           @generate-chapter="generateChapter"
@@ -52,6 +53,7 @@
           @delete-chapter="deleteChapter"
           @generate-outline="generateOutline"
           @chat-chapter="openChapterOutlineChatModal"
+          @mark-chapter="handleMarkChapter"
         />
 
         <div class="flex-1 min-w-0">
@@ -172,6 +174,7 @@ const outlinePreviewData = ref<OutlinePreviewResponse | null>(null)
 const isPreviewLoading = ref(false)
 const isConfirmingOutline = ref(false)
 const outlineStartChapter = ref(0)
+const markUpdatingChapterNumber = ref<number | null>(null)
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -642,6 +645,21 @@ const openChapterOutlineChatModal = (chapter: ChapterOutline) => {
 
 const openBlueprintSettingChat = () => {
   showBlueprintSettingChatModal.value = true
+}
+
+const handleMarkChapter = async (payload: { chapterNumber: number; markTag: 'none' | 'todo_fix' | 'todo_check' | 'todo_polish' }) => {
+  if (!project.value || markUpdatingChapterNumber.value === payload.chapterNumber) return
+  markUpdatingChapterNumber.value = payload.chapterNumber
+  try {
+    const updatedProject = await NovelAPI.updateChapterMark(project.value.id, payload.chapterNumber, payload.markTag)
+    novelStore.setCurrentProject(updatedProject)
+    globalAlert.showSuccess('章节标记已保存', '保存成功')
+  } catch (error) {
+    console.error('更新章节标记失败:', error)
+    globalAlert.showError(`更新章节标记失败: ${error instanceof Error ? error.message : '未知错误'}`, '保存失败')
+  } finally {
+    markUpdatingChapterNumber.value = null
+  }
 }
 
 const onBlueprintSettingApplied = async (updatedProject: NovelProject) => {

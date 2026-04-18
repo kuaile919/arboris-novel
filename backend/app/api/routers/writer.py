@@ -47,6 +47,7 @@ from ...schemas.novel import (
     NovelProject as NovelProjectSchema,
     SelectVersionRequest,
     UpdateChapterOutlineRequest,
+    UpdateChapterMarkRequest,
     ChapterOutlineConverseRequest,
     ChapterOutlineConverseResponse,
     ChapterOutlineConverseContextResponse,
@@ -247,6 +248,217 @@ def _collect_foreshadowing_terms(item: Dict[str, Any]) -> List[str]:
     return deduped
 
 
+def _normalize_match_text(text: str) -> str:
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", text or "")
+
+
+def _extract_chapter_number_from_text(text: Optional[str]) -> Optional[int]:
+    """从文本中提取“第X章”数字。"""
+    if not text:
+        return None
+    match = re.search(r"第\s*(\d+)\s*章", str(text))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_payoff_display_content(content: str, planted_chapter: Optional[int]) -> str:
+    """将回收描述标准化为带来源章节的可读格式。"""
+    cleaned = str(content or "").strip()
+    if not cleaned:
+        return ""
+    if not planted_chapter:
+        return cleaned
+    # 已经包含来源章号时避免重复追加
+    if re.search(rf"第\s*{planted_chapter}\s*章", cleaned):
+        return cleaned
+    return f"对应第{planted_chapter}章埋下的伏笔：{cleaned}"
+
+
+def _longest_common_substring_len(a: str, b: str) -> int:
+    if not a or not b:
+        return 0
+    dp = [0] * (len(b) + 1)
+    best = 0
+    for i in range(1, len(a) + 1):
+        prev = 0
+        for j in range(1, len(b) + 1):
+            cur = dp[j]
+            if a[i - 1] == b[j - 1]:
+                dp[j] = prev + 1
+                if dp[j] > best:
+                    best = dp[j]
+            else:
+                dp[j] = 0
+            prev = cur
+    return best
+
+
+def _bigram_jaccard(a: str, b: str) -> float:
+    if len(a) < 2 or len(b) < 2:
+        return 0.0
+    sa = {a[i : i + 2] for i in range(len(a) - 1)}
+    sb = {b[i : i + 2] for i in range(len(b) - 1)}
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    if not vec_a or not vec_b:
+        return 0.0
+    size = min(len(vec_a), len(vec_b))
+    if size == 0:
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for i in range(size):
+        a = float(vec_a[i])
+        b = float(vec_b[i])
+        dot += a * b
+        norm_a += a * a
+        norm_b += b * b
+    if norm_a <= 0 or norm_b <= 0:
+        return 0.0
+    return dot / ((norm_a ** 0.5) * (norm_b ** 0.5))
+
+
+async def _match_payoff_to_foreshadowing(
+    *,
+    payoff: Dict[str, Any],
+    candidates: List[Foreshadowing],
+    llm_service: Optional[LLMService] = None,
+    user_id: Optional[int] = None,
+    embedding_cache: Optional[Dict[str, List[float]]] = None,
+) -> Optional[Foreshadowing]:
+    """
+    伏笔“收”到“埋”的混合匹配：
+    1) foreshadowing_id 精确匹配
+    2) 文本包含匹配
+    3) 关键词重叠匹配
+    4) 中文短语相似匹配
+    5) 向量相似匹配（fallback）
+    """
+    if not candidates:
+        return None
+
+    payoff_content = str(payoff.get("content") or "").strip()
+    if not payoff_content:
+        return None
+
+    payoff_id = payoff.get("foreshadowing_id")
+    try:
+        payoff_id = int(payoff_id) if payoff_id is not None else None
+    except (TypeError, ValueError):
+        payoff_id = None
+    if payoff_id is not None:
+        exact = next((fs for fs in candidates if fs.id == payoff_id), None)
+        if exact:
+            return exact
+
+    for fs in candidates:
+        fs_content = (fs.content or "").strip()
+        if not fs_content:
+            continue
+        if payoff_content in fs_content or fs_content in payoff_content:
+            return fs
+
+    payoff_terms = set(_collect_foreshadowing_terms(payoff))
+    best_kw_score = 0
+    best_kw_match = None
+    for fs in candidates:
+        fs_terms = set(
+            _collect_foreshadowing_terms(
+                {
+                    "content": fs.content,
+                    "keywords": fs.keywords or [],
+                }
+            )
+        )
+        overlap = payoff_terms & fs_terms
+        if not overlap:
+            continue
+        score = sum(len(term) for term in overlap)
+        if score > best_kw_score:
+            best_kw_score = score
+            best_kw_match = fs
+    if best_kw_match and best_kw_score >= 4:
+        return best_kw_match
+
+    payoff_norm = _normalize_match_text(payoff_content)
+    best_sim_score = 0.0
+    best_sim_match = None
+    for fs in candidates:
+        fs_norm = _normalize_match_text((fs.content or "").strip())
+        if not fs_norm:
+            continue
+        lcs = _longest_common_substring_len(payoff_norm, fs_norm)
+        if lcs < 4:
+            continue
+        jaccard = _bigram_jaccard(payoff_norm, fs_norm)
+        sim_score = jaccard + min(lcs, 8) * 0.03
+        if sim_score > best_sim_score:
+            best_sim_score = sim_score
+            best_sim_match = fs
+    if best_sim_match and best_sim_score >= 0.24:
+        return best_sim_match
+
+    if not llm_service or not user_id or not settings.vector_store_enabled:
+        return None
+
+    try:
+        cache = embedding_cache if embedding_cache is not None else {}
+
+        async def _get_cached_embedding(key: str, text: str) -> Optional[List[float]]:
+            if key in cache:
+                return cache[key]
+            emb = await llm_service.get_embedding(text, user_id=user_id)
+            if isinstance(emb, list) and emb:
+                cache[key] = emb
+                return emb
+            return None
+
+        payoff_emb = await _get_cached_embedding(f"payoff::{payoff_content}", payoff_content)
+        if not payoff_emb:
+            return None
+
+        vector_scores: List[tuple[Foreshadowing, float]] = []
+        # 控制向量开销，优先最近章节候选
+        sorted_candidates = sorted(candidates, key=lambda x: x.chapter_number, reverse=True)[:80]
+        for fs in sorted_candidates:
+            fs_content = (fs.content or "").strip()
+            if not fs_content:
+                continue
+            fs_emb = await _get_cached_embedding(f"fs::{fs.id}", fs_content)
+            if not fs_emb:
+                continue
+            sim = _cosine_similarity(payoff_emb, fs_emb)
+            vector_scores.append((fs, sim))
+
+        if not vector_scores:
+            return None
+        vector_scores.sort(key=lambda x: x[1], reverse=True)
+        best_fs, best_score = vector_scores[0]
+        second_score = vector_scores[1][1] if len(vector_scores) > 1 else -1.0
+        if best_score >= 0.78 and (best_score - second_score) >= 0.03:
+            logger.info(
+                "向量匹配命中伏笔: payoff=%s fs=%s score=%.3f second=%.3f",
+                payoff_content[:40],
+                best_fs.id,
+                best_score,
+                second_score,
+            )
+            return best_fs
+    except Exception as exc:
+        logger.warning("向量匹配伏笔失败，忽略并继续: %s", exc)
+
+    return None
+
+
 def _check_foreshadowing_contract(generated_text: str, must_payoff_items: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     伏笔执行检查（轻量规则版）：
@@ -398,6 +610,7 @@ def _normalize_foreshadowing_entry(entry: Any) -> Optional[Dict[str, Any]]:
         return {
             "content": content,
             "target_reveal_chapter": None,
+            "planted_chapter": _extract_chapter_number_from_text(content),
             "importance": None,
             "keywords": [],
             "foreshadowing_id": None,
@@ -419,6 +632,19 @@ def _normalize_foreshadowing_entry(entry: Any) -> Optional[Dict[str, Any]]:
         except (TypeError, ValueError):
             target_chapter = None
 
+        planted = (
+            entry.get("planted_chapter")
+            or entry.get("source_chapter")
+            or entry.get("source_chapter_number")
+            or entry.get("from_chapter")
+        )
+        try:
+            planted_chapter = int(planted) if planted is not None else None
+        except (TypeError, ValueError):
+            planted_chapter = None
+        if planted_chapter is None:
+            planted_chapter = _extract_chapter_number_from_text(content)
+
         importance = entry.get("importance")
         if isinstance(importance, str):
             importance = importance.strip().lower()
@@ -439,6 +665,7 @@ def _normalize_foreshadowing_entry(entry: Any) -> Optional[Dict[str, Any]]:
         return {
             "content": content,
             "target_reveal_chapter": target_chapter,
+            "planted_chapter": planted_chapter,
             "importance": importance,
             "keywords": keywords,
             "foreshadowing_id": foreshadowing_id,
@@ -452,34 +679,156 @@ def _extract_tagged_foreshadowings_from_text(
     tag: str,
 ) -> List[Dict[str, Any]]:
     """
-    从自由文本中提取 [埋]/[收] 片段，兜底结构化返回。
+    从自由文本中提取 [埋]/[收]、（埋：...）/（收：...）、埋：.../收：... 片段，兜底结构化返回。
     仅用于对话阶段展示，不改变主提示词协议。
     """
     if not text:
         return []
 
     normalized_text = str(text)
-    # 匹配形如: [埋] / 【埋】 ... [收] / 【收】
-    blocks = re.findall(
+    entries: List[Dict[str, Any]] = []
+    opposite_tag = "收" if tag == "埋" else "埋"
+
+    def _normalize_piece(raw_piece: str) -> str:
+        content = raw_piece.strip().strip("。").strip()
+        if not content:
+            return ""
+        # 去掉当前标签前缀（如“埋：xxx”）
+        content = re.sub(rf"^\s*{tag}\s*[：:]\s*", "", content).strip()
+        # 若分片本身是另一个标签，直接丢弃，避免“埋/收”串栏
+        if re.match(rf"^\s*{opposite_tag}\s*[：:]", content):
+            return ""
+        # 同一分片里若出现另一个标签起点，则在该位置截断
+        next_tag_match = re.search(rf"[（(\[【]?\s*{opposite_tag}\s*[：:]", content)
+        if next_tag_match:
+            content = content[:next_tag_match.start()].strip()
+        return content
+
+    def _extract_labeled_contents(block_text: str, current_tag: str) -> List[str]:
+        """
+        从一段文本中按“埋：/收：”标签切片，只返回 current_tag 的片段。
+        一旦切到 opposite_tag，会自然停在该片段边界，直到后续再次出现 current_tag。
+        """
+        segs = re.findall(
+            r"(埋|收)\s*[：:]\s*([\s\S]*?)(?=(?:[；;，,\n]\s*(?:埋|收)\s*[：:])|$)",
+            block_text,
+        )
+        if not segs:
+            return []
+        out: List[str] = []
+        for seg_tag, seg_text in segs:
+            if seg_tag != current_tag:
+                continue
+            content = _normalize_piece(seg_text)
+            if content:
+                out.append(content)
+        return out
+
+    def _collect_with_tag_switch(pieces: List[str], current_tag: str, other_tag: str) -> List[str]:
+        """
+        顺序扫描分片：
+        - 命中 other_tag: 进入屏蔽
+        - 屏蔽中仅当再次遇到 current_tag 才恢复
+        """
+        out: List[str] = []
+        blocked = False
+        for raw in pieces:
+            chunk = (raw or "").strip()
+            if not chunk:
+                continue
+            if re.match(rf"^\s*{other_tag}\s*[：:]", chunk):
+                blocked = True
+                continue
+            if re.match(rf"^\s*{current_tag}\s*[：:]", chunk):
+                blocked = False
+            if blocked:
+                continue
+            out.append(chunk)
+        return out
+
+    # 1) 匹配形如: [埋] / 【埋】 ... [收] / 【收】
+    bracket_blocks = re.findall(
         r"(?:\[|【)\s*(埋|收)\s*(?:\]|】)\s*([\s\S]*?)(?=(?:(?:\[|【)\s*(?:埋|收)\s*(?:\]|】))|$)",
         normalized_text,
     )
-    if not blocks:
-        return []
-
-    entries: List[Dict[str, Any]] = []
-    for block_tag, block_text in blocks:
+    for block_tag, block_text in bracket_blocks:
         if block_tag != tag:
             continue
-        # 常见分隔符拆分多条
-        pieces = re.split(r"[；;\n]+", block_text)
+        labeled_contents = _extract_labeled_contents(block_text, tag)
+        pieces = labeled_contents if labeled_contents else re.split(r"[；;\n]+", block_text)
+        if not labeled_contents:
+            pieces = _collect_with_tag_switch(pieces, tag, opposite_tag)
         for piece in pieces:
-            content = piece.strip().strip("。").strip()
+            content = _normalize_piece(piece)
             if not content:
                 continue
 
             target_reveal_chapter: Optional[int] = None
             # 识别“第X章”作为潜在目标章节
+            chapter_match = re.search(r"第\s*(\d+)\s*章", content)
+            if chapter_match:
+                try:
+                    target_reveal_chapter = int(chapter_match.group(1))
+                except (TypeError, ValueError):
+                    target_reveal_chapter = None
+
+            entries.append(
+                {
+                    "content": content,
+                    "target_reveal_chapter": target_reveal_chapter if tag == "埋" else None,
+                    "importance": None,
+                    "keywords": [],
+                    "foreshadowing_id": None,
+                }
+            )
+
+    # 2) 匹配形如: （埋：...）/（收：...）
+    paren_blocks = re.findall(r"[（(]\s*(埋|收)\s*[：:]\s*([^）)]+)\s*[）)]", normalized_text)
+    for block_tag, block_text in paren_blocks:
+        if block_tag != tag:
+            continue
+        labeled_contents = _extract_labeled_contents(block_text, tag)
+        pieces = labeled_contents if labeled_contents else re.split(r"[；;\n]+", block_text)
+        if not labeled_contents:
+            pieces = _collect_with_tag_switch(pieces, tag, opposite_tag)
+        for piece in pieces:
+            content = _normalize_piece(piece)
+            if not content:
+                continue
+
+            target_reveal_chapter: Optional[int] = None
+            chapter_match = re.search(r"第\s*(\d+)\s*章", content)
+            if chapter_match:
+                try:
+                    target_reveal_chapter = int(chapter_match.group(1))
+                except (TypeError, ValueError):
+                    target_reveal_chapter = None
+
+            entries.append(
+                {
+                    "content": content,
+                    "target_reveal_chapter": target_reveal_chapter if tag == "埋" else None,
+                    "importance": None,
+                    "keywords": [],
+                    "foreshadowing_id": None,
+                }
+            )
+
+    # 3) 匹配形如: 埋：... / 收：...（非括号）
+    inline_blocks = re.findall(
+        r"(?<![\w\u4e00-\u9fff])(埋|收)\s*[：:]\s*([\s\S]*?)(?=(?:[；;，,\n]\s*(?:埋|收)\s*[：:])|$)",
+        normalized_text,
+    )
+    for block_tag, block_text in inline_blocks:
+        if block_tag != tag:
+            continue
+        pieces = re.split(r"[；;\n]+", block_text)
+        for piece in pieces:
+            content = _normalize_piece(piece)
+            if not content:
+                continue
+
+            target_reveal_chapter: Optional[int] = None
             chapter_match = re.search(r"第\s*(\d+)\s*章", content)
             if chapter_match:
                 try:
@@ -2514,6 +2863,8 @@ async def converse_chapter_outline(
     project_schema = await novel_service._serialize_project(project)
     context = await _get_chapter_outline_converse_context_data(
         novel_service=novel_service,
+        llm_service=None,
+        user_id=None,
         session=session,
         project_id=project_id,
         chapter_number=request.chapter_number,
@@ -2645,6 +2996,8 @@ async def get_chapter_outline_converse_context(
     project_schema = await novel_service._serialize_project(project)
     context = await _get_chapter_outline_converse_context_data(
         novel_service=novel_service,
+        llm_service=None,
+        user_id=None,
         session=session,
         project_id=project_id,
         chapter_number=chapter_number,
@@ -2721,7 +3074,16 @@ async def apply_chapter_outline_converse(
     existing_foreshadowings, _ = await foreshadowing_service.get_foreshadowings(project_id, limit=2000)
     existing_fs_contents = {fs.content for fs in existing_foreshadowings}
 
-    for plant in _normalize_foreshadowing_entries(request.foreshadowing_plants):
+    normalized_plants = _normalize_foreshadowing_entries(request.foreshadowing_plants)
+    if isinstance(request.foreshadowing_plants, list):
+        keep_map = _build_keep_contents_by_chapter(normalized_plants, request.chapter_number)
+        await foreshadowing_service.prune_ai_foreshadowings_for_chapters(
+            project_id=project_id,
+            chapter_numbers=[request.chapter_number],
+            keep_contents_by_chapter=keep_map,
+        )
+
+    for plant in normalized_plants:
         content = plant.get("content", "")
         if not content or content in existing_fs_contents:
             continue
@@ -2739,22 +3101,19 @@ async def apply_chapter_outline_converse(
         )
         existing_fs_contents.add(content)
 
+    unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+        project_id, request.chapter_number
+    )
+    llm_service = LLMService(session)
+    payoff_embedding_cache: Dict[str, List[float]] = {}
     for payoff in _normalize_foreshadowing_entries(request.foreshadowing_payoffs):
-        payoff_content = payoff.get("content", "")
-        if not payoff_content:
-            continue
-        unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
-            project_id, request.chapter_number
+        matched = await _match_payoff_to_foreshadowing(
+            payoff=payoff,
+            candidates=unresolved_foreshadowings,
+            llm_service=llm_service,
+            user_id=current_user.id,
+            embedding_cache=payoff_embedding_cache,
         )
-        matched = None
-        payoff_id = payoff.get("foreshadowing_id")
-        if payoff_id is not None:
-            matched = next((fs for fs in unresolved_foreshadowings if fs.id == payoff_id), None)
-        if not matched:
-            for fs in unresolved_foreshadowings:
-                if payoff_content in fs.content or fs.content in payoff_content:
-                    matched = fs
-                    break
         if matched:
             matched.target_reveal_chapter = request.chapter_number
             previous_note = (matched.author_note or "").strip()
@@ -2794,6 +3153,37 @@ AI建议内容：
                 )
         except Exception as e:
             logger.warning("提炼大纲对话规则失败: %s", e)
+
+    await session.commit()
+    return await _load_project_schema(novel_service, project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/chapters/mark", response_model=NovelProjectSchema)
+async def update_chapter_mark(
+    project_id: str,
+    request: UpdateChapterMarkRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    outline = await novel_service.get_outline(project_id, request.chapter_number)
+    if not outline:
+        raise HTTPException(status_code=404, detail="未找到对应章节大纲")
+
+    normalized_mark = str(request.mark_tag or "").strip().lower()
+    valid_marks = {"none", "todo_fix", "todo_check", "todo_polish"}
+    if normalized_mark not in valid_marks:
+        raise HTTPException(status_code=400, detail="无效标记类型")
+
+    existing_metadata = outline.metadata if isinstance(outline.metadata, dict) else {}
+    next_metadata = dict(existing_metadata)
+    if normalized_mark == "none":
+        next_metadata.pop("mark_tag", None)
+    else:
+        next_metadata["mark_tag"] = normalized_mark
+    outline.metadata = next_metadata
 
     await session.commit()
     return await _load_project_schema(novel_service, project_id, current_user.id)
@@ -2871,6 +3261,26 @@ def _normalize_foreshadowing_entries(raw_items: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _build_keep_contents_by_chapter(
+    entries: List[Dict[str, Any]],
+    default_chapter: Optional[int] = None,
+) -> Dict[int, set[str]]:
+    keep_map: Dict[int, set[str]] = {}
+    for entry in entries:
+        chapter_number = entry.get("chapter_number", default_chapter)
+        if chapter_number is None:
+            continue
+        try:
+            chapter_number = int(chapter_number)
+        except (TypeError, ValueError):
+            continue
+        content = str(entry.get("content") or "").strip()
+        if not content:
+            continue
+        keep_map.setdefault(chapter_number, set()).add(content)
+    return keep_map
+
+
 def _infer_first_appear_from_outline(
     chapter_outline: Optional[List[Any]],
     name: str,
@@ -2897,6 +3307,8 @@ def _infer_first_appear_from_outline(
 async def _get_chapter_outline_converse_context_data(
     *,
     novel_service: NovelService,
+    llm_service: Optional[LLMService],
+    user_id: Optional[int],
     session: AsyncSession,
     project_id: str,
     chapter_number: int,
@@ -3000,6 +3412,7 @@ async def _get_chapter_outline_converse_context_data(
             {
                 "content": resolution.resolution_text or fs.content,
                 "foreshadowing_id": fs.id,
+                "planted_chapter": fs.chapter_number,
                 "keywords": fs.keywords or [],
             }
         )
@@ -3010,6 +3423,27 @@ async def _get_chapter_outline_converse_context_data(
         plants = _extract_tagged_foreshadowings_from_text(summary_text, "埋")
     if not payoffs:
         payoffs = _extract_tagged_foreshadowings_from_text(summary_text, "收")
+        if payoffs:
+            unmatched_result = await session.execute(
+                select(Foreshadowing).where(
+                    Foreshadowing.project_id == project_id,
+                    Foreshadowing.chapter_number < chapter_number,
+                )
+            )
+            candidates = list(unmatched_result.scalars().all())
+            payoff_embedding_cache: Dict[str, List[float]] = {}
+            for payoff in payoffs:
+                matched = await _match_payoff_to_foreshadowing(
+                    payoff=payoff,
+                    candidates=candidates,
+                    llm_service=llm_service,
+                    user_id=user_id,
+                    embedding_cache=payoff_embedding_cache,
+                )
+                if matched:
+                    payoff["foreshadowing_id"] = matched.id
+                    payoff["planted_chapter"] = matched.chapter_number
+                    payoff["keywords"] = matched.keywords or []
 
     return {
         "chapter_number": chapter_number,
@@ -3310,15 +3744,13 @@ async def generate_chapters_outline(
                     unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
                         project_id, chapter_number
                     )
-                    matched = None
-                    payoff_id = payoff.get("foreshadowing_id")
-                    if payoff_id is not None:
-                        matched = next((fs for fs in unresolved_foreshadowings if fs.id == payoff_id), None)
-                    if not matched:
-                        for fs in unresolved_foreshadowings:
-                            if payoff_content in fs.content or fs.content in payoff_content:
-                                matched = fs
-                                break
+                    matched = await _match_payoff_to_foreshadowing(
+                        payoff=payoff,
+                        candidates=unresolved_foreshadowings,
+                        llm_service=llm_service,
+                        user_id=current_user.id,
+                        embedding_cache=None,
+                    )
 
                     if matched:
                         matched.target_reveal_chapter = chapter_number
@@ -3361,6 +3793,7 @@ async def preview_chapters_outline(
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
     llm_service = LLMService(session)
+    foreshadowing_service = ForeshadowingService(session)
     style_rule_service = UserStyleRuleService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
@@ -3520,6 +3953,8 @@ async def preview_chapters_outline(
 2. 禁止在当前进度阶段让故事完结或进入结局阶段
 3. 确保故事发展符合当前进度的阶段特征
 4. 根据新元素的 first_appear_chapter，在对应章节安排它们的首次登场
+5. 所有“回收伏笔”必须明确标注对应前文埋设章节（planted_chapter），并与已生成章节中的埋设内容一一对应
+6. 回收项优先使用结构化对象：{{"content":"回收内容","planted_chapter":12,"foreshadowing_id":null,"keywords":[]}}
 """
 
     outline_response = await llm_service.get_llm_response(
@@ -3541,30 +3976,39 @@ async def preview_chapters_outline(
         # 构建预览响应
         chapters_data = outline_data.get("chapters", [])
         chapters_preview = []
-        for item in chapters_data:
-            chapters_preview.append({
-                "chapter_number": item.get("chapter_number"),
-                "title": item.get("title", ""),
-                "summary": item.get("summary", ""),
-                "narrative_phase": item.get("narrative_phase"),
-                "story_progress": item.get("story_progress"),
-                "foreshadowing": item.get("foreshadowing"),
-                "emotion_hook": item.get("emotion_hook"),
-            })
-
-        # 提取伏笔信息
         foreshadowing_plants = []
         foreshadowing_payoffs = []
+        payoff_embedding_cache: Dict[str, List[float]] = {}
+        unresolved_cache: Dict[int, List[Foreshadowing]] = {}
+
         for item in chapters_data:
             chapter_number = item.get("chapter_number")
-            foreshadowing_data = item.get("foreshadowing", {})
-            plant_list = foreshadowing_data.get("plant", [])
-            payoff_list = foreshadowing_data.get("payoff", [])
+            try:
+                chapter_number = int(chapter_number)
+            except (TypeError, ValueError):
+                chapter_number = None
+            if chapter_number is None:
+                continue
+
+            chapter_foreshadowing = item.get("foreshadowing") or {}
+            plant_list = chapter_foreshadowing.get("plant", [])
+            payoff_list = chapter_foreshadowing.get("payoff", [])
+            normalized_plant_texts: List[str] = []
+            normalized_payoff_texts: List[str] = []
+
+            unresolved_foreshadowings: List[Foreshadowing] = []
+            if chapter_number is not None:
+                if chapter_number not in unresolved_cache:
+                    unresolved_cache[chapter_number] = await foreshadowing_service.get_unresolved_foreshadowings(
+                        project_id, chapter_number
+                    )
+                unresolved_foreshadowings = unresolved_cache[chapter_number]
 
             for raw_plant in plant_list:
                 plant = _normalize_foreshadowing_entry(raw_plant)
                 if not plant:
                     continue
+                normalized_plant_texts.append(plant["content"])
                 foreshadowing_plants.append({
                     "chapter_number": chapter_number,
                     "content": plant["content"],
@@ -3577,12 +4021,62 @@ async def preview_chapters_outline(
                 payoff = _normalize_foreshadowing_entry(raw_payoff)
                 if not payoff:
                     continue
-                foreshadowing_payoffs.append({
-                    "chapter_number": chapter_number,
-                    "content": payoff["content"],
-                    "foreshadowing_id": payoff.get("foreshadowing_id"),
-                    "keywords": payoff.get("keywords", []),
-                })
+
+                planted_chapter = payoff.get("planted_chapter")
+                matched_foreshadowing: Optional[Foreshadowing] = None
+                if unresolved_foreshadowings:
+                    # 优先在指定来源章节中匹配，避免串线；失败后回退全量未回收伏笔。
+                    if planted_chapter is not None:
+                        chapter_candidates = [
+                            fs for fs in unresolved_foreshadowings if fs.chapter_number == planted_chapter
+                        ]
+                        if chapter_candidates:
+                            matched_foreshadowing = await _match_payoff_to_foreshadowing(
+                                payoff=payoff,
+                                candidates=chapter_candidates,
+                                llm_service=llm_service,
+                                user_id=current_user.id,
+                                embedding_cache=payoff_embedding_cache,
+                            )
+                    if not matched_foreshadowing:
+                        matched_foreshadowing = await _match_payoff_to_foreshadowing(
+                            payoff=payoff,
+                            candidates=unresolved_foreshadowings,
+                            llm_service=llm_service,
+                            user_id=current_user.id,
+                            embedding_cache=payoff_embedding_cache,
+                        )
+
+                if matched_foreshadowing:
+                    payoff["foreshadowing_id"] = matched_foreshadowing.id
+                    planted_chapter = matched_foreshadowing.chapter_number
+                    if not payoff.get("keywords"):
+                        payoff["keywords"] = matched_foreshadowing.keywords or []
+
+                display_content = _format_payoff_display_content(payoff["content"], planted_chapter)
+                if display_content:
+                    normalized_payoff_texts.append(display_content)
+                    foreshadowing_payoffs.append({
+                        "chapter_number": chapter_number,
+                        "content": display_content,
+                        "raw_content": payoff["content"],
+                        "planted_chapter": planted_chapter,
+                        "foreshadowing_id": payoff.get("foreshadowing_id"),
+                        "keywords": payoff.get("keywords", []),
+                    })
+
+            chapters_preview.append({
+                "chapter_number": chapter_number,
+                "title": item.get("title", ""),
+                "summary": item.get("summary", ""),
+                "narrative_phase": item.get("narrative_phase"),
+                "story_progress": item.get("story_progress"),
+                "foreshadowing": {
+                    "plant": normalized_plant_texts,
+                    "payoff": normalized_payoff_texts,
+                },
+                "emotion_hook": item.get("emotion_hook"),
+            })
 
             # 兜底：若结构化 foreshadowing 缺失，则从章节摘要中的 [埋]/【埋】、[收]/【收】提取
             summary_text = str(item.get("summary") or "")
@@ -3602,9 +4096,17 @@ async def preview_chapters_outline(
                 for payoff in fallback_payoffs:
                     if not payoff.get("content"):
                         continue
+                    fallback_planted_chapter = payoff.get("planted_chapter")
+                    if fallback_planted_chapter is None:
+                        fallback_planted_chapter = _extract_chapter_number_from_text(payoff["content"])
+                    fallback_display_content = _format_payoff_display_content(
+                        payoff["content"], fallback_planted_chapter
+                    )
                     foreshadowing_payoffs.append({
                         "chapter_number": chapter_number,
-                        "content": payoff["content"],
+                        "content": fallback_display_content or payoff["content"],
+                        "raw_content": payoff["content"],
+                        "planted_chapter": fallback_planted_chapter,
                         "foreshadowing_id": payoff.get("foreshadowing_id"),
                         "keywords": payoff.get("keywords", []),
                     })
@@ -3670,11 +4172,23 @@ async def confirm_chapters_outline(
         # 处理章节大纲
         chapters_data = preview_data.get("chapters", [])
         for item in chapters_data:
+            chapter_foreshadowing = item.get("foreshadowing")
+            metadata = None
+            if isinstance(chapter_foreshadowing, dict):
+                plants = chapter_foreshadowing.get("plant")
+                payoffs = chapter_foreshadowing.get("payoff")
+                metadata = {
+                    "foreshadowing": {
+                        "plant": plants if isinstance(plants, list) else [],
+                        "payoff": payoffs if isinstance(payoffs, list) else [],
+                    }
+                }
             await novel_service.update_or_create_outline(
                 project_id,
                 item["chapter_number"],
                 item.get("title", ""),
-                item.get("summary", "")
+                item.get("summary", ""),
+                metadata=metadata,
             )
 
         # 处理新角色
@@ -3774,10 +4288,16 @@ async def confirm_chapters_outline(
                     for payoff in _extract_tagged_foreshadowings_from_text(summary_text, "收"):
                         if not payoff.get("content"):
                             continue
+                        planted_chapter = payoff.get("planted_chapter")
+                        if planted_chapter is None:
+                            planted_chapter = _extract_chapter_number_from_text(payoff["content"])
+                        display_content = _format_payoff_display_content(payoff["content"], planted_chapter)
                         foreshadowing_payoffs.append(
                             {
                                 "chapter_number": chapter_number,
-                                "content": payoff["content"],
+                                "content": display_content or payoff["content"],
+                                "raw_content": payoff["content"],
+                                "planted_chapter": planted_chapter,
                                 "foreshadowing_id": payoff.get("foreshadowing_id"),
                                 "keywords": payoff.get("keywords", []),
                             }
@@ -3805,6 +4325,22 @@ async def confirm_chapters_outline(
         foreshadowing_payoffs = dedup_payoffs
 
         logger.info(f"伏笔数据: plants={len(foreshadowing_plants)}, payoffs={len(foreshadowing_payoffs)}")
+
+        # 对本次确认涉及章节做 AI 伏笔同步清理，避免大纲重生成后历史垃圾残留
+        keep_contents_by_chapter = _build_keep_contents_by_chapter(foreshadowing_plants)
+        affected_chapters: List[int] = []
+        for item in chapters_data:
+            chapter_number = item.get("chapter_number")
+            try:
+                chapter_number = int(chapter_number)
+            except (TypeError, ValueError):
+                continue
+            affected_chapters.append(chapter_number)
+        await foreshadowing_service.prune_ai_foreshadowings_for_chapters(
+            project_id=project_id,
+            chapter_numbers=affected_chapters,
+            keep_contents_by_chapter=keep_contents_by_chapter,
+        )
 
         # 获取章节映射 - 使用 auto_commit=False 避免多次提交
         chapter_map = {}
@@ -3879,9 +4415,17 @@ async def confirm_chapters_outline(
 
         # 处理回收的伏笔
         logger.info(f"开始处理伏笔回收，共 {len(foreshadowing_payoffs)} 条")
+        llm_service = LLMService(session)
+        payoff_embedding_cache: Dict[str, List[float]] = {}
         for payoff in foreshadowing_payoffs:
             chapter_number = payoff.get("chapter_number")
             content = payoff.get("content", "")
+            raw_content = str(payoff.get("raw_content") or "").strip()
+            planted_chapter = payoff.get("planted_chapter")
+            try:
+                planted_chapter = int(planted_chapter) if planted_chapter is not None else None
+            except (TypeError, ValueError):
+                planted_chapter = None
 
             if chapter_number not in chapter_map:
                 logger.warning(f"伏笔回收章节 {chapter_number} 不在 chapter_map 中，跳过")
@@ -3893,20 +4437,31 @@ async def confirm_chapters_outline(
                 unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
                     project_id, chapter_number
                 )
+                payoff_for_match = dict(payoff)
+                if raw_content:
+                    payoff_for_match["content"] = raw_content
+
                 matched = None
-                payoff_id = payoff.get("foreshadowing_id")
-                try:
-                    payoff_id = int(payoff_id) if payoff_id is not None else None
-                except (TypeError, ValueError):
-                    payoff_id = None
-                if payoff_id is not None:
-                    matched = next((fs for fs in unresolved_foreshadowings if fs.id == payoff_id), None)
-                for fs in unresolved_foreshadowings:
-                    if matched:
-                        break
-                    if content in fs.content or fs.content in content:
-                        matched = fs
-                        break
+                if planted_chapter is not None:
+                    chapter_candidates = [
+                        fs for fs in unresolved_foreshadowings if fs.chapter_number == planted_chapter
+                    ]
+                    if chapter_candidates:
+                        matched = await _match_payoff_to_foreshadowing(
+                            payoff=payoff_for_match,
+                            candidates=chapter_candidates,
+                            llm_service=llm_service,
+                            user_id=current_user.id,
+                            embedding_cache=payoff_embedding_cache,
+                        )
+                if matched is None:
+                    matched = await _match_payoff_to_foreshadowing(
+                        payoff=payoff_for_match,
+                        candidates=unresolved_foreshadowings,
+                        llm_service=llm_service,
+                        user_id=current_user.id,
+                        embedding_cache=payoff_embedding_cache,
+                    )
 
                 if matched:
                     matched.target_reveal_chapter = chapter_number

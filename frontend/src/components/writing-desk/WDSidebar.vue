@@ -61,6 +61,13 @@
               <h3 class="md-title-medium font-semibold">章节大纲</h3>
               <div class="flex items-center gap-2">
                 <button
+                  v-if="hasMarkedChapters"
+                  @click.stop="scrollToFirstMarkedChapter"
+                  class="md-btn md-btn-text md-ripple"
+                >
+                  定位到标记
+                </button>
+                <button
                   v-if="hasIncompleteChapters"
                   @click.stop="scrollToFirstIncompleteChapter"
                   class="md-btn md-btn-text md-ripple"
@@ -82,12 +89,12 @@
                 :ref="el => setChapterRef(chapter.chapter_number, el)"
                 @click="$emit('selectChapter', chapter.chapter_number)"
                 :class="[
-                  'group cursor-pointer p-4 m3-chapter-card m3-stagger',
+                  'group relative cursor-pointer p-4 m3-chapter-card m3-stagger',
                   selectedForDeletion.includes(chapter.chapter_number)
                     ? 'm3-chapter-danger'
                     : selectedChapterNumber === chapter.chapter_number
                     ? 'm3-chapter-selected md-elevation-1'
-                    : 'hover:md-elevation-1'
+                    : [getChapterMarkClass(chapter.chapter_number), 'hover:md-elevation-1']
                 ]"
                 :style="{ animationDelay: `${index * 40}ms` }"
               >
@@ -135,9 +142,27 @@
                     <Tooltip :text="chapter.summary">
                       <p class="md-body-small md-on-surface-variant line-clamp-2 leading-relaxed">{{ chapter.summary }}</p>
                     </Tooltip>
+                    <div
+                      v-if="chapter.foreshadowing?.payoff?.length || chapter.foreshadowing?.plant?.length"
+                      class="mt-1 text-xs md-on-surface-variant line-clamp-1"
+                    >
+                      <span v-if="chapter.foreshadowing?.payoff?.length">
+                        收：{{ chapter.foreshadowing.payoff.join('；') }}
+                      </span>
+                      <span v-else-if="chapter.foreshadowing?.plant?.length">
+                        埋：{{ chapter.foreshadowing.plant.join('；') }}
+                      </span>
+                    </div>
 
                     <!-- 章节状态 -->
                     <div class="mt-2 flex items-center gap-2">
+                      <span
+                        v-if="getChapterMarkLabel(chapter.chapter_number)"
+                        class="md-chip m3-mark-chip"
+                        :class="getChapterMarkChipClass(chapter.chapter_number)"
+                      >
+                        {{ getChapterMarkLabel(chapter.chapter_number) }}
+                      </span>
                       <span
                         v-if="isChapterCompleted(chapter.chapter_number)"
                         class="md-chip"
@@ -193,6 +218,16 @@
                   <!-- 章节操作按钮 -->
                   <div class="flex items-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                     <button
+                      @click.stop="toggleMarkMenu(chapter.chapter_number)"
+                      class="md-icon-btn md-ripple m3-mark-menu-trigger"
+                      title="设置章节标记"
+                      :disabled="markUpdatingChapterNumber === chapter.chapter_number"
+                    >
+                      <svg class="w-4 h-4" :class="{ 'opacity-40': markUpdatingChapterNumber === chapter.chapter_number }" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M5 3a2 2 0 00-2 2v12l7-3 7 3V5a2 2 0 00-2-2H5z"></path>
+                      </svg>
+                    </button>
+                    <button
                       @click.stop="$emit('chatChapter', chapter)"
                       class="md-icon-btn md-ripple"
                       title="对话修改大纲"
@@ -228,6 +263,22 @@
                     </button>
                     <!-- Batch delete replaces the single delete button -->
                   </div>
+                </div>
+                <div
+                  v-if="openMarkMenuChapter === chapter.chapter_number"
+                  class="absolute right-3 top-11 z-20 w-36 rounded-lg border border-slate-200 bg-white shadow-lg m3-mark-menu-panel"
+                  @click.stop
+                >
+                  <button
+                    v-for="option in CHAPTER_MARK_OPTIONS"
+                    :key="option.id"
+                    type="button"
+                    class="w-full px-3 py-2 text-left text-sm hover:bg-slate-50 first:rounded-t-lg last:rounded-b-lg"
+                    :class="{ 'font-semibold text-indigo-600': getChapterMark(chapter.chapter_number) === option.id }"
+                    @click.stop="applyChapterMark(chapter.chapter_number, option.id)"
+                  >
+                    {{ option.label }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -272,7 +323,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick } from 'vue'
+import { computed, ref, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { NovelProject } from '@/api/novel'
@@ -285,15 +336,35 @@ interface Props {
   generatingChapter: number | null
   evaluatingChapter: number | null
   isGeneratingOutline: boolean
+  markUpdatingChapterNumber?: number | null
 }
 
 const props = defineProps<Props>()
 
-const emit = defineEmits(['closeSidebar', 'selectChapter', 'generateChapter', 'editChapter', 'deleteChapter', 'generateOutline', 'chatChapter'])
+const emit = defineEmits([
+  'closeSidebar',
+  'selectChapter',
+  'generateChapter',
+  'editChapter',
+  'deleteChapter',
+  'generateOutline',
+  'chatChapter',
+  'markChapter'
+])
 
 const selectedForDeletion = ref<number[]>([])
 const listContainer = ref<HTMLElement | null>(null)
 const chapterRefs = ref<Record<number, HTMLElement | null>>({})
+const openMarkMenuChapter = ref<number | null>(null)
+
+type ChapterMarkId = 'none' | 'todo_fix' | 'todo_check' | 'todo_polish'
+
+const CHAPTER_MARK_OPTIONS: Array<{ id: ChapterMarkId; label: string }> = [
+  { id: 'none', label: '无标记' },
+  { id: 'todo_fix', label: '待修订' },
+  { id: 'todo_check', label: '待核查' },
+  { id: 'todo_polish', label: '待优化' }
+]
 
 const characterCount = computed(() => {
   return props.project?.blueprint?.characters?.length || 0
@@ -317,6 +388,14 @@ const totalChapters = computed(() => {
 const hasIncompleteChapters = computed(() => {
   if (!props.project?.blueprint?.chapter_outline) return false
   return props.project.blueprint.chapter_outline.some(ch => !isChapterCompleted(ch.chapter_number))
+})
+
+const hasMarkedChapters = computed(() => {
+  if (!props.project?.blueprint?.chapter_outline) return false
+  return props.project.blueprint.chapter_outline.some(ch => {
+    const mark = getChapterMark(ch.chapter_number)
+    return mark !== 'none'
+  })
 })
 
 function toggleSelection(chapterNumber: number) {
@@ -370,10 +449,74 @@ function setChapterRef(chapterNumber: number, el: Element | ComponentPublicInsta
   }
 }
 
+const getChapterMark = (chapterNumber: number): ChapterMarkId => {
+  const chapter = props.project?.blueprint?.chapter_outline?.find(ch => ch.chapter_number === chapterNumber)
+  const mark = String(chapter?.mark_tag || '').trim()
+  if (mark === 'todo_fix' || mark === 'todo_check' || mark === 'todo_polish') {
+    return mark
+  }
+  return 'none'
+}
+
+const getChapterMarkLabel = (chapterNumber: number): string => {
+  const mark = getChapterMark(chapterNumber)
+  if (mark === 'none') return ''
+  const option = CHAPTER_MARK_OPTIONS.find(item => item.id === mark)
+  return option?.label || ''
+}
+
+const getChapterMarkClass = (chapterNumber: number): string => {
+  const mark = getChapterMark(chapterNumber)
+  if (mark === 'todo_fix') return 'm3-chapter-mark-fix'
+  if (mark === 'todo_check') return 'm3-chapter-mark-check'
+  if (mark === 'todo_polish') return 'm3-chapter-mark-polish'
+  return ''
+}
+
+const getChapterMarkChipClass = (chapterNumber: number): string => {
+  const mark = getChapterMark(chapterNumber)
+  if (mark === 'todo_fix') return 'm3-mark-chip-fix'
+  if (mark === 'todo_check') return 'm3-mark-chip-check'
+  if (mark === 'todo_polish') return 'm3-mark-chip-polish'
+  return ''
+}
+
+const toggleMarkMenu = (chapterNumber: number) => {
+  if (openMarkMenuChapter.value === chapterNumber) {
+    openMarkMenuChapter.value = null
+    return
+  }
+  openMarkMenuChapter.value = chapterNumber
+}
+
+const applyChapterMark = (chapterNumber: number, markTag: ChapterMarkId) => {
+  emit('markChapter', {
+    chapterNumber,
+    markTag
+  })
+  openMarkMenuChapter.value = null
+}
+
 const scrollToFirstIncompleteChapter = async () => {
   if (!props.project?.blueprint?.chapter_outline) return
   const sorted = [...props.project.blueprint.chapter_outline].sort((a, b) => a.chapter_number - b.chapter_number)
   const target = sorted.find(chapter => !isChapterCompleted(chapter.chapter_number))
+  if (!target) return
+  await nextTick()
+  const element = chapterRefs.value[target.chapter_number]
+  if (!element) return
+  const container = listContainer.value
+  if (container) {
+    element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+  } else {
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+}
+
+const scrollToFirstMarkedChapter = async () => {
+  if (!props.project?.blueprint?.chapter_outline) return
+  const sorted = [...props.project.blueprint.chapter_outline].sort((a, b) => a.chapter_number - b.chapter_number)
+  const target = sorted.find(chapter => getChapterMark(chapter.chapter_number) !== 'none')
   if (!target) return
   await nextTick()
   const element = chapterRefs.value[target.chapter_number]
@@ -444,6 +587,31 @@ const canGenerateChapter = (chapterNumber: number) => {
 
   return true
 }
+
+const handleClickOutside = (event: MouseEvent) => {
+  const target = event.target as Node | null
+  if (!target) return
+  if (!(target instanceof Element)) {
+    openMarkMenuChapter.value = null
+    return
+  }
+  const insideMenu = target.closest('.m3-mark-menu-trigger') || target.closest('.m3-mark-menu-panel')
+  if (!insideMenu) {
+    openMarkMenuChapter.value = null
+  }
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('click', handleClickOutside)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('click', handleClickOutside)
+  }
+})
 </script>
 
 <style scoped>
@@ -466,6 +634,40 @@ const canGenerateChapter = (chapterNumber: number) => {
 .m3-chapter-danger {
   border-color: var(--md-error);
   background-color: var(--md-error-container);
+}
+
+.m3-chapter-mark-fix {
+  border-color: #f59e0b;
+  background-color: #fffbeb;
+}
+
+.m3-chapter-mark-check {
+  border-color: #3b82f6;
+  background-color: #eff6ff;
+}
+
+.m3-chapter-mark-polish {
+  border-color: #10b981;
+  background-color: #ecfdf5;
+}
+
+.m3-mark-chip {
+  font-weight: 600;
+}
+
+.m3-mark-chip-fix {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.m3-mark-chip-check {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
+
+.m3-mark-chip-polish {
+  background-color: #d1fae5;
+  color: #065f46;
 }
 
 .m3-stagger {

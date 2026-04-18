@@ -52,6 +52,8 @@ class ChapterOutline(BaseModel):
     chapter_number: int
     title: str
     summary: str
+    foreshadowing: Optional[Dict[str, List[str]]] = None
+    mark_tag: Optional[str] = None
 
 
 class Chapter(ChapterOutline):
@@ -223,6 +225,14 @@ class UpdateChapterOutlineRequest(BaseModel):
     ai_message: Optional[str] = Field(default=None, description="AI对话中给出的建议，将提炼为规则追加到提示词文件中")
 
 
+class UpdateChapterMarkRequest(BaseModel):
+    chapter_number: int
+    mark_tag: str = Field(
+        ...,
+        description="章节标记：none|todo_fix|todo_check|todo_polish",
+    )
+
+
 class DeleteChapterRequest(BaseModel):
     chapter_numbers: List[int]
 
@@ -318,6 +328,7 @@ class OutlineEntityItem(BaseModel):
 class OutlineForeshadowingItem(BaseModel):
     content: str
     target_reveal_chapter: Optional[int] = None
+    planted_chapter: Optional[int] = None
     importance: Optional[str] = None
     keywords: List[str] = Field(default_factory=list)
     foreshadowing_id: Optional[int] = None

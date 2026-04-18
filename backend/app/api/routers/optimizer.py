@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select as sa_select
+from sqlalchemy import delete as sa_delete, select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
@@ -95,6 +95,13 @@ class OptimizeTaskStatusResponse(BaseModel):
     optimized_content: Optional[str] = None
     optimization_notes: Optional[str] = None
     error_message: Optional[str] = None
+
+
+class CleanupOptimizationHistoryResponse(BaseModel):
+    status: str
+    deleted_count: int
+    scope: str
+    keep_running: bool
 
 
 class PolishSelectionRequest(BaseModel):
@@ -605,6 +612,45 @@ async def get_latest_optimization_result(
         optimized_content=task.optimized_content,
         optimization_notes=task.optimization_notes,
         error_message=task.error_message,
+    )
+
+
+@router.delete("/optimization-history", response_model=CleanupOptimizationHistoryResponse)
+async def cleanup_optimization_history(
+    project_id: Optional[str] = None,
+    chapter_number: Optional[int] = None,
+    keep_running: bool = True,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> CleanupOptimizationHistoryResponse:
+    if chapter_number is not None and not project_id:
+        raise HTTPException(status_code=422, detail="传入 chapter_number 时必须同时传入 project_id")
+
+    novel_service = NovelService(session)
+    scope = "user_all"
+    stmt = sa_delete(ChapterOptimizationTask).where(ChapterOptimizationTask.user_id == current_user.id)
+
+    if project_id:
+        await novel_service.ensure_project_owner(project_id, current_user.id)
+        scope = "project"
+        stmt = stmt.where(ChapterOptimizationTask.project_id == project_id)
+
+    if chapter_number is not None:
+        scope = "chapter"
+        stmt = stmt.where(ChapterOptimizationTask.chapter_number == chapter_number)
+
+    if keep_running:
+        stmt = stmt.where(ChapterOptimizationTask.status.notin_(["pending", "running"]))
+
+    result = await session.execute(stmt)
+    await session.commit()
+    deleted_count = max(int(result.rowcount or 0), 0)
+
+    return CleanupOptimizationHistoryResponse(
+        status="success",
+        deleted_count=deleted_count,
+        scope=scope,
+        keep_running=keep_running,
     )
 
 

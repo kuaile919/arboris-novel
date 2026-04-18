@@ -354,9 +354,17 @@ async def get_foreshadowing(
     )
     db_foreshadowings = foreshadowings_result.scalars().all()
 
-    # 获取当前最大章节号（用于判断 overdue）
+    # 获取“有正文内容”的最大章节号（用于判断 overdue）
+    # 避免仅因大纲确认创建了章节空壳而误判为逾期。
     max_chapter_result = await session.execute(
-        select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.chapter_number.desc()).limit(1)
+        select(Chapter)
+        .where(
+            Chapter.project_id == project_id,
+            Chapter.selected_version_id.is_not(None),
+            Chapter.word_count > 0,
+        )
+        .order_by(Chapter.chapter_number.desc())
+        .limit(1)
     )
     max_chapter = max_chapter_result.scalar_one_or_none()
     current_chapter = max_chapter.chapter_number if max_chapter else 0

@@ -25,6 +25,7 @@ from ...schemas.novel import (
     NovelProjectSummary,
     NovelSectionResponse,
     NovelSectionType,
+    UpdateChapterMarkRequest,
 )
 from ...schemas.user import UserInDB
 from ...services.import_service import ImportService
@@ -192,8 +193,22 @@ def _normalize_blueprint_setting_patch(raw_patch: Any) -> BlueprintPatch | None:
     if not isinstance(raw_patch, dict):
         return None
 
+    normalized_patch = dict(raw_patch)
+    world_setting = normalized_patch.get("world_setting")
+    if isinstance(world_setting, dict):
+        # 常见键名纠偏，避免模型输出导致前端展示不到预期字段
+        world_setting_aliases = {
+            "rules": "core_rules",
+            "current_system": "currency_system",
+        }
+        normalized_world_setting: Dict[str, Any] = {}
+        for key, value in world_setting.items():
+            normalized_key = world_setting_aliases.get(str(key), str(key))
+            normalized_world_setting[normalized_key] = value
+        normalized_patch["world_setting"] = normalized_world_setting
+
     try:
-        patch_model = BlueprintPatch.model_validate(raw_patch)
+        patch_model = BlueprintPatch.model_validate(normalized_patch)
     except Exception:
         return None
 
@@ -456,6 +471,37 @@ async def delete_novels(
     await novel_service.delete_projects(project_ids, current_user.id)
     logger.info("用户 %s 删除项目 %s", current_user.id, project_ids)
     return {"status": "success", "message": f"成功删除 {len(project_ids)} 个项目"}
+
+
+@router.post("/{project_id}/chapters/mark", response_model=NovelProjectSchema)
+async def update_chapter_mark(
+    project_id: str,
+    request: UpdateChapterMarkRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    outline = await novel_service.get_outline(project_id, request.chapter_number)
+    if not outline:
+        raise HTTPException(status_code=404, detail="未找到对应章节大纲")
+
+    normalized_mark = str(request.mark_tag or "").strip().lower()
+    valid_marks = {"none", "todo_fix", "todo_check", "todo_polish"}
+    if normalized_mark not in valid_marks:
+        raise HTTPException(status_code=400, detail="无效标记类型")
+
+    existing_metadata = outline.metadata if isinstance(outline.metadata, dict) else {}
+    next_metadata = dict(existing_metadata)
+    if normalized_mark == "none":
+        next_metadata.pop("mark_tag", None)
+    else:
+        next_metadata["mark_tag"] = normalized_mark
+    outline.metadata = next_metadata
+    await session.commit()
+
+    return await novel_service.get_project_schema(project_id, current_user.id)
 
 
 @router.post("/{project_id}/concept/converse", response_model=ConverseResponse)

@@ -736,6 +736,13 @@ class NovelService:
 
     async def replace_chapter_versions(self, chapter: Chapter, contents: List[str], metadata: Optional[List[Dict]] = None) -> List[ChapterVersion]:
         await self.session.execute(delete(ChapterVersion).where(ChapterVersion.chapter_id == chapter.id))
+        # 章节重生成后，旧的分层优化结果已不再对应当前正文，统一清理。
+        await self.session.execute(
+            delete(ChapterOptimizationTask).where(
+                ChapterOptimizationTask.project_id == chapter.project_id,
+                ChapterOptimizationTask.chapter_number == chapter.chapter_number,
+            )
+        )
         versions: List[ChapterVersion] = []
         for index, content in enumerate(contents):
             extra = metadata[index] if metadata and index < len(metadata) else None
@@ -1266,6 +1273,17 @@ class NovelService:
                         chapter_number=outline.chapter_number,
                         title=outline.title,
                         summary=outline.summary or "",
+                        foreshadowing=(
+                            outline.metadata.get("foreshadowing")
+                            if isinstance(getattr(outline, "metadata", None), dict)
+                            else None
+                        ),
+                        mark_tag=(
+                            str(outline.metadata.get("mark_tag"))
+                            if isinstance(getattr(outline, "metadata", None), dict)
+                            and outline.metadata.get("mark_tag") is not None
+                            else None
+                        ),
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],

@@ -109,6 +109,9 @@
               <div v-if="viewPayoffs.length" class="space-y-1">
                 <div v-for="(item, i) in viewPayoffs" :key="`po-${i}`" class="text-gray-700">
                   {{ item.content }}
+                  <span v-if="item.planted_chapter" class="text-xs text-gray-500 ml-1">
+                    （埋于第{{ item.planted_chapter }}章）
+                  </span>
                 </div>
               </div>
               <div v-else class="text-gray-400">暂无</div>

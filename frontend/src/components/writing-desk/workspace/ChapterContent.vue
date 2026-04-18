@@ -75,6 +75,20 @@
             </svg>
             {{ isCheckingOptimizeResult ? '查看中...' : '查看优化结果' }}
           </button>
+          <button
+            class="md-btn md-btn-outlined md-ripple flex items-center gap-1"
+            @click="clearOptimizeHistory"
+            :disabled="isClearingOptimizeHistory"
+            :class="{ 'opacity-70': isClearingOptimizeHistory }"
+          >
+            <svg v-if="isClearingOptimizeHistory" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+            </svg>
+            <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3m-7 0h8" />
+            </svg>
+            {{ isClearingOptimizeHistory ? '清理中...' : '清理优化记录' }}
+          </button>
           <!-- 查看摘要按钮 -->
           <button
             class="md-btn md-btn-outlined md-ripple flex items-center gap-1"
@@ -521,6 +535,7 @@ const optimizeResultNotes = ref('')
 const optimizeTaskId = ref<string | null>(null)
 const optimizeTargetChapterNumber = ref<number | null>(null)
 const isCheckingOptimizeResult = ref(false)
+const isClearingOptimizeHistory = ref(false)
 const diffViewerRef = ref<InstanceType<typeof TextDiffViewer> | null>(null)
 const selectedOptimizedText = ref('')
 const selectedOptimizedRange = ref<OptimizedSelectionRange | null>(null)
@@ -881,6 +896,38 @@ const viewLatestOptimizeResult = async () => {
     globalAlert.showError(error.message || '暂无可查看的优化结果')
   } finally {
     isCheckingOptimizeResult.value = false
+  }
+}
+
+const clearOptimizeHistory = async () => {
+  if (!props.projectId) return
+
+  const confirmed = window.confirm('确认清理当前章节的历史优化记录吗？进行中的任务会保留。')
+  if (!confirmed) return
+
+  isClearingOptimizeHistory.value = true
+  try {
+    const result = await OptimizerAPI.clearOptimizationHistory(
+      props.projectId,
+      props.selectedChapter.chapter_number,
+      true
+    )
+
+    stopOptimizePolling()
+    optimizeTaskId.value = null
+    optimizeTargetChapterNumber.value = null
+    showOptimizeResult.value = false
+    resetSelectionPolishState()
+    originalContent.value = ''
+    optimizedContent.value = ''
+    optimizeResultNotes.value = ''
+
+    globalAlert.showSuccess(`已清理 ${result.deleted_count} 条优化记录`)
+  } catch (error: any) {
+    console.error('清理优化记录失败:', error)
+    globalAlert.showError(error.message || '清理优化记录失败，请稍后重试')
+  } finally {
+    isClearingOptimizeHistory.value = false
   }
 }
 

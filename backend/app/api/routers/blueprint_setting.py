@@ -52,8 +52,22 @@ def _normalize_blueprint_setting_patch(raw_patch: Any) -> BlueprintPatch | None:
     if not isinstance(raw_patch, dict):
         return None
 
+    normalized_patch = dict(raw_patch)
+    world_setting = normalized_patch.get("world_setting")
+    if isinstance(world_setting, dict):
+        # 常见键名纠偏，避免模型输出导致前端展示不到预期字段
+        world_setting_aliases = {
+            "rules": "core_rules",
+            "current_system": "currency_system",
+        }
+        normalized_world_setting: Dict[str, Any] = {}
+        for key, value in world_setting.items():
+            normalized_key = world_setting_aliases.get(str(key), str(key))
+            normalized_world_setting[normalized_key] = value
+        normalized_patch["world_setting"] = normalized_world_setting
+
     try:
-        patch_model = BlueprintPatch.model_validate(raw_patch)
+        patch_model = BlueprintPatch.model_validate(normalized_patch)
     except Exception:
         return None
 
@@ -395,6 +409,7 @@ async def converse_with_blueprint_setting(
 - 当 proposed_patch 不为空时，need_confirm 通常应为 true。
 - 不要输出 markdown，不要输出额外解释。
 - world_setting 可以只返回需要补充或覆盖的子字段。
+- 货币体系字段请使用 world_setting.currency_system（不要写成 current_system）。
 """
 
     llm_response = await llm_service.get_llm_response(

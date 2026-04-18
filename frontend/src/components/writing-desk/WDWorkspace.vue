@@ -21,6 +21,12 @@
             </div>
             <h3 class="md-title-medium md-on-surface mb-1">{{ selectedChapterOutline?.title || '未知标题' }}</h3>
             <p class="md-body-small md-on-surface-variant">{{ selectedChapterOutline?.summary || '暂无章节描述' }}</p>
+            <p
+              v-if="selectedChapterOutline?.foreshadowing?.payoff?.length"
+              class="md-body-small md-on-surface-variant mt-1"
+            >
+              回收伏笔：{{ selectedChapterOutline.foreshadowing.payoff.join('；') }}
+            </p>
           </div>
         </div>
       </div>

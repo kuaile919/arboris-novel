@@ -55,6 +55,119 @@ class ForeshadowingService:
         await self.session.flush()
         logger.info(f"创建伏笔: project={project_id}, chapter={chapter_number}, type={foreshadowing_type}, target={target_reveal_chapter}, importance={importance}")
         return foreshadowing
+
+    async def update_foreshadowing(
+        self,
+        project_id: str,
+        foreshadowing_id: int,
+        *,
+        content: Optional[str] = None,
+        target_reveal_chapter: Optional[int] = None,
+        importance: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        author_note: Optional[str] = None,
+    ) -> Foreshadowing:
+        """编辑伏笔（仅允许未回收状态）。"""
+        stmt = select(Foreshadowing).where(
+            and_(
+                Foreshadowing.id == foreshadowing_id,
+                Foreshadowing.project_id == project_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        foreshadowing = result.scalar_one_or_none()
+        if not foreshadowing:
+            raise ValueError(f"伏笔不存在: {foreshadowing_id}")
+
+        if foreshadowing.status in {"resolved", "revealed"}:
+            raise ValueError("已回收伏笔不允许编辑")
+
+        if content is not None:
+            normalized = content.strip()
+            if not normalized:
+                raise ValueError("伏笔内容不能为空")
+            foreshadowing.content = normalized
+        if target_reveal_chapter is not None:
+            foreshadowing.target_reveal_chapter = target_reveal_chapter
+        if importance is not None:
+            foreshadowing.importance = importance
+        if keywords is not None:
+            foreshadowing.keywords = [str(k).strip() for k in keywords if str(k).strip()]
+        if author_note is not None:
+            foreshadowing.author_note = author_note
+
+        await self.session.flush()
+        logger.info("编辑伏笔: project=%s foreshadowing=%s", project_id, foreshadowing_id)
+        return foreshadowing
+
+    async def delete_foreshadowing(
+        self,
+        project_id: str,
+        foreshadowing_id: int,
+    ) -> None:
+        """删除伏笔（仅允许未回收状态）。"""
+        stmt = select(Foreshadowing).where(
+            and_(
+                Foreshadowing.id == foreshadowing_id,
+                Foreshadowing.project_id == project_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        foreshadowing = result.scalar_one_or_none()
+        if not foreshadowing:
+            raise ValueError(f"伏笔不存在: {foreshadowing_id}")
+
+        if foreshadowing.status in {"resolved", "revealed"}:
+            raise ValueError("已回收伏笔不允许删除")
+
+        await self.session.delete(foreshadowing)
+        await self.session.flush()
+        logger.info("删除伏笔: project=%s foreshadowing=%s", project_id, foreshadowing_id)
+
+    async def prune_ai_foreshadowings_for_chapters(
+        self,
+        *,
+        project_id: str,
+        chapter_numbers: List[int],
+        keep_contents_by_chapter: Dict[int, set[str]],
+    ) -> int:
+        """
+        清理指定章节范围内由 AI 生成且未回收的伏笔。
+        仅删除内容不在 keep_contents_by_chapter 中的记录。
+        """
+        normalized_chapters = sorted({int(ch) for ch in chapter_numbers if ch is not None})
+        if not normalized_chapters:
+            return 0
+
+        stmt = select(Foreshadowing).where(
+            and_(
+                Foreshadowing.project_id == project_id,
+                Foreshadowing.is_manual.is_(False),
+                Foreshadowing.chapter_number.in_(normalized_chapters),
+                Foreshadowing.status.in_(["planted", "developing", "open", "partial", "abandoned"]),
+            )
+        )
+        result = await self.session.execute(stmt)
+        candidates = list(result.scalars().all())
+
+        deleted = 0
+        for fs in candidates:
+            keep_set = keep_contents_by_chapter.get(fs.chapter_number, set())
+            content_key = (fs.content or "").strip()
+            if content_key in keep_set:
+                continue
+            await self.session.delete(fs)
+            deleted += 1
+
+        if deleted:
+            await self.session.flush()
+        logger.info(
+            "清理AI伏笔: project=%s chapters=%s deleted=%s",
+            project_id,
+            normalized_chapters,
+            deleted,
+        )
+        return deleted
     
     async def get_foreshadowings(
         self,

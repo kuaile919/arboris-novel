@@ -106,6 +106,11 @@ export interface ChapterOutline {
   chapter_number: number
   title: string
   summary: string
+  mark_tag?: 'none' | 'todo_fix' | 'todo_check' | 'todo_polish' | null
+  foreshadowing?: {
+    plant: string[]
+    payoff: string[]
+  }
 }
 
 export interface ChapterVersion {
@@ -193,6 +198,7 @@ export interface OutlineEntityItem {
 export interface OutlineForeshadowingItem {
   content: string
   target_reveal_chapter?: number | null
+  planted_chapter?: number | null
   importance?: string | null
   keywords?: string[]
   foreshadowing_id?: number | null
@@ -291,6 +297,27 @@ export interface OutlinePreviewResponse {
   foreshadowing_plants: { chapter_number: number; content: string }[]
   foreshadowing_payoffs: { chapter_number: number; content: string }[]
   ai_message?: string
+}
+
+export interface ForeshadowingAnalyticsItem {
+  id: string
+  description: string
+  planted_chapter: number
+  planted_chapter_title: string
+  expected_payoff_chapter?: number
+  actual_payoff_chapter?: number
+  status: 'planted' | 'paid_off' | 'overdue'
+  importance: 'short' | 'medium' | 'long'
+}
+
+export interface ForeshadowingAnalyticsResponse {
+  project_id: string
+  project_title: string
+  total_foreshadowings: number
+  planted_count: number
+  paid_off_count: number
+  overdue_count: number
+  foreshadowings: ForeshadowingAnalyticsItem[]
 }
 
 export interface DeleteNovelsResponse {
@@ -411,6 +438,7 @@ const PROJECTS_BASE = `${API_BASE_URL}${API_PREFIX}/projects`
 const WRITER_PREFIX = '/api/writer'
 const WRITER_API_BASE = `${API_BASE_URL}${WRITER_PREFIX}`
 const WRITER_BASE = `${API_BASE_URL}${WRITER_PREFIX}/novels`
+const ANALYTICS_BASE = `${API_BASE_URL}${API_PREFIX}/analytics`
 
 export class NovelAPI {
   static async createNovel(title: string, initialPrompt: string): Promise<NovelProject> {
@@ -445,6 +473,33 @@ export class NovelAPI {
     chapterNumber: number
   ): Promise<ChapterRuntimeStatus> {
     return request(`${WRITER_BASE}/${projectId}/chapters/${chapterNumber}/status`)
+  }
+
+  static async getForeshadowingAnalytics(projectId: string): Promise<ForeshadowingAnalyticsResponse> {
+    return request(`${ANALYTICS_BASE}/${projectId}/foreshadowing`)
+  }
+
+  static async updateForeshadowing(
+    projectId: string,
+    foreshadowingId: number,
+    payload: {
+      content?: string
+      target_reveal_chapter?: number | null
+      importance?: 'major' | 'minor' | 'subtle' | null
+      keywords?: string[]
+      author_note?: string | null
+    }
+  ): Promise<any> {
+    return request(`${NOVELS_BASE}/${projectId}/foreshadowings/${foreshadowingId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    })
+  }
+
+  static async deleteForeshadowing(projectId: string, foreshadowingId: number): Promise<{ status: string; message: string }> {
+    return request(`${NOVELS_BASE}/${projectId}/foreshadowings/${foreshadowingId}`, {
+      method: 'DELETE'
+    })
   }
 
   static async getWritingStyleLibrary(): Promise<WritingStyleLibrary> {
@@ -545,6 +600,20 @@ export class NovelAPI {
       body: JSON.stringify({
         ...chapterOutline,
         ai_message: aiMessage || null
+      })
+    })
+  }
+
+  static async updateChapterMark(
+    projectId: string,
+    chapterNumber: number,
+    markTag: 'none' | 'todo_fix' | 'todo_check' | 'todo_polish'
+  ): Promise<NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}/chapters/mark`, {
+      method: 'POST',
+      body: JSON.stringify({
+        chapter_number: chapterNumber,
+        mark_tag: markTag
       })
     })
   }
@@ -881,6 +950,13 @@ export interface OptimizeTaskStatusResponse {
   error_message?: string | null
 }
 
+export interface CleanupOptimizationHistoryResponse {
+  status: string
+  deleted_count: number
+  scope: 'chapter' | 'project' | 'user_all' | string
+  keep_running: boolean
+}
+
 export interface SummaryResponse {
   summary: string | null
   has_summary: boolean
@@ -947,6 +1023,24 @@ export class OptimizerAPI {
     })
     return request(`${OPTIMIZER_BASE}/latest-optimization-result?${params}`, {
       method: 'GET'
+    })
+  }
+
+  /**
+   * 清理历史优化任务记录
+   */
+  static async clearOptimizationHistory(
+    projectId?: string,
+    chapterNumber?: number,
+    keepRunning: boolean = true
+  ): Promise<CleanupOptimizationHistoryResponse> {
+    const params = new URLSearchParams()
+    if (projectId) params.set('project_id', projectId)
+    if (typeof chapterNumber === 'number') params.set('chapter_number', chapterNumber.toString())
+    params.set('keep_running', keepRunning ? 'true' : 'false')
+
+    return request(`${OPTIMIZER_BASE}/optimization-history?${params}`, {
+      method: 'DELETE'
     })
   }
 

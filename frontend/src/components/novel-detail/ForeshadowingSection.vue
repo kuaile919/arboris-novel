@@ -110,7 +110,7 @@
         class="md-card md-card-outlined p-4 transition-all duration-200 hover:shadow-md"
         style="border-radius: var(--md-radius-md);"
       >
-        <div class="flex items-start justify-between">
+        <div class="flex items-start justify-between gap-3">
           <div class="flex-1">
             <!-- Status & Importance -->
             <div class="flex items-center gap-2 mb-2">
@@ -158,6 +158,46 @@
               </div>
             </div>
           </div>
+          <div v-if="canMutate(item)" class="flex items-center gap-2">
+            <button
+              class="md-btn md-btn-text md-ripple"
+              :disabled="isSavingEdit"
+              @click="startEdit(item)"
+            >
+              编辑
+            </button>
+            <button
+              class="md-btn md-btn-text md-ripple"
+              :disabled="isSavingEdit"
+              style="color: var(--md-error);"
+              @click="removeItem(item)"
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="editingItemId"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style="background-color: rgba(0, 0, 0, 0.45);"
+      @click.self="cancelEdit"
+    >
+      <div class="md-card p-5 w-full max-w-2xl" style="border-radius: var(--md-radius-lg); background-color: var(--md-surface);">
+        <div class="md-title-medium mb-3" style="color: var(--md-on-surface);">编辑伏笔</div>
+        <textarea
+          v-model="editDescription"
+          class="w-full min-h-[120px] p-3 rounded-md border"
+          style="border-color: var(--md-outline); color: var(--md-on-surface); background-color: var(--md-surface);"
+          placeholder="请输入伏笔内容"
+        />
+        <div class="flex justify-end gap-2 mt-4">
+          <button class="md-btn md-btn-text md-ripple" :disabled="isSavingEdit" @click="cancelEdit">取消</button>
+          <button class="md-btn md-btn-filled md-ripple" :disabled="isSavingEdit" @click="saveEdit">
+            {{ isSavingEdit ? '保存中...' : '保存' }}
+          </button>
         </div>
       </div>
     </div>
@@ -167,41 +207,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
-
-interface Foreshadowing {
-  id: string
-  description: string
-  planted_chapter: number
-  planted_chapter_title: string
-  expected_payoff_chapter?: number
-  actual_payoff_chapter?: number
-  status: 'planted' | 'paid_off' | 'overdue'
-  importance: 'short' | 'medium' | 'long'
-}
-
-interface ForeshadowingResponse {
-  project_id: string
-  project_title: string
-  total_foreshadowings: number
-  planted_count: number
-  paid_off_count: number
-  overdue_count: number
-  foreshadowings: Foreshadowing[]
-}
+import { NovelAPI, type ForeshadowingAnalyticsItem } from '@/api/novel'
 
 const route = useRoute()
-const authStore = useAuthStore()
 const projectId = route.params.id as string
 
 const isLoading = ref(false)
 const error = ref<string | null>(null)
-const foreshadowingList = ref<Foreshadowing[]>([])
+const foreshadowingList = ref<ForeshadowingAnalyticsItem[]>([])
 const totalForeshadowings = ref(0)
 const plantedCount = ref(0)
 const paidOffCount = ref(0)
 const overdueCount = ref(0)
 const activeTab = ref('all')
+const editingItemId = ref<string | null>(null)
+const editDescription = ref('')
+const isSavingEdit = ref(false)
 
 const statusTabs = [
   { key: 'all', label: '全部', color: '#5F6368' },
@@ -252,43 +273,60 @@ const getImportanceLabel = (importance: string) => {
   return labels[importance] || importance
 }
 
+const canMutate = (item: ForeshadowingAnalyticsItem) => item.status !== 'paid_off'
+
+const startEdit = (item: ForeshadowingAnalyticsItem) => {
+  editingItemId.value = item.id
+  editDescription.value = item.description || ''
+}
+
+const cancelEdit = () => {
+  editingItemId.value = null
+  editDescription.value = ''
+}
+
+const saveEdit = async () => {
+  if (!editingItemId.value) return
+  const content = editDescription.value.trim()
+  if (!content) {
+    error.value = '伏笔内容不能为空'
+    return
+  }
+  isSavingEdit.value = true
+  error.value = null
+  try {
+    await NovelAPI.updateForeshadowing(projectId, Number(editingItemId.value), { content })
+    cancelEdit()
+    await fetchData()
+  } catch (e: any) {
+    error.value = e?.message || '编辑失败，请稍后重试'
+  } finally {
+    isSavingEdit.value = false
+  }
+}
+
+const removeItem = async (item: ForeshadowingAnalyticsItem) => {
+  const ok = window.confirm('确认删除这条伏笔吗？该操作不可撤销。')
+  if (!ok) return
+
+  isSavingEdit.value = true
+  error.value = null
+  try {
+    await NovelAPI.deleteForeshadowing(projectId, Number(item.id))
+    await fetchData()
+  } catch (e: any) {
+    error.value = e?.message || '删除失败，请稍后重试'
+  } finally {
+    isSavingEdit.value = false
+  }
+}
+
 const fetchData = async () => {
   isLoading.value = true
   error.value = null
   
   try {
-    const response = await fetch(`/api/analytics/${projectId}/foreshadowing`, {
-      headers: {
-        'Authorization': `Bearer ${authStore.token}`,
-        'Content-Type': 'application/json'
-      }
-    })
-    
-    if (!response.ok) {
-      let errorMessage = '获取伏笔数据失败'
-      try {
-        const errorData = await response.json()
-        // 处琅22错误（参数校验失败）
-        if (response.status === 422 && errorData.detail) {
-          if (Array.isArray(errorData.detail)) {
-            // FastAPI验证错误格式
-            const errors = errorData.detail.map((err: any) => 
-              `${err.loc?.join('.')} - ${err.msg}`
-            ).join('; ')
-            errorMessage = `参数校验失败: ${errors}`
-          } else if (typeof errorData.detail === 'string') {
-            errorMessage = errorData.detail
-          }
-        } else {
-          errorMessage = errorData.detail || errorData.message || JSON.stringify(errorData)
-        }
-      } catch (e) {
-        errorMessage = `HTTP ${response.status}: ${response.statusText}`
-      }
-      throw new Error(errorMessage)
-    }
-    
-    const data: ForeshadowingResponse = await response.json()
+    const data = await NovelAPI.getForeshadowingAnalytics(projectId)
     foreshadowingList.value = data.foreshadowings || []
     totalForeshadowings.value = data.total_foreshadowings
     plantedCount.value = data.planted_count

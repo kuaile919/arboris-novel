@@ -154,8 +154,8 @@
                         <div v-if="previewData?.foreshadowing_plants?.length" class="p-3 rounded-lg" style="background-color: var(--md-tertiary-container);">
                           <div class="font-semibold" style="color: var(--md-on-tertiary-container);">待埋设 ({{ previewData.foreshadowing_plants.length }})</div>
                           <ul class="mt-2 space-y-1 text-sm" style="color: var(--md-on-tertiary-container);">
-                            <li v-for="(fp, idx) in displayedPlants" :key="idx">
-                              第{{ fp.chapter_number }}章: {{ fp.content.slice(0, 30) }}{{ fp.content.length > 30 ? '...' : '' }}
+                            <li v-for="(fp, idx) in displayedPlants" :key="idx" class="whitespace-normal break-all">
+                              第{{ fp.chapter_number }}章: {{ fp.content }}
                             </li>
                             <li v-if="previewData.foreshadowing_plants.length > 5" class="cursor-pointer hover:underline md-on-surface-variant" @click="showAllPlants = !showAllPlants">
                               {{ showAllPlants ? '收起' : `...还有 ${previewData.foreshadowing_plants.length - 5} 个 (点击展开)` }}
@@ -165,8 +165,8 @@
                         <div v-if="previewData?.foreshadowing_payoffs?.length" class="p-3 rounded-lg" style="background-color: var(--md-secondary-container);">
                           <div class="font-semibold" style="color: var(--md-on-secondary-container);">计划回收 ({{ previewData.foreshadowing_payoffs.length }})</div>
                           <ul class="mt-2 space-y-1 text-sm" style="color: var(--md-on-secondary-container);">
-                            <li v-for="(fp, idx) in displayedPayoffs" :key="idx">
-                              第{{ fp.chapter_number }}章: {{ fp.content.slice(0, 30) }}{{ fp.content.length > 30 ? '...' : '' }}
+                            <li v-for="(fp, idx) in displayedPayoffs" :key="idx" class="whitespace-normal break-all">
+                              第{{ fp.chapter_number }}章: {{ fp.content }}
                             </li>
                             <li v-if="previewData.foreshadowing_payoffs.length > 5" class="cursor-pointer hover:underline md-on-surface-variant" @click="showAllPayoffs = !showAllPayoffs">
                               {{ showAllPayoffs ? '收起' : `...还有 ${previewData.foreshadowing_payoffs.length - 5} 个 (点击展开)` }}

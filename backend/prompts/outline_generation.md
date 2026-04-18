@@ -90,6 +90,7 @@
 在章节摘要中，可以用以下方式暗示伏笔：
 - 【埋】表示本章埋设伏笔
 - 【收】表示本章回收伏笔
+- **回收必须对齐来源章**：每条【收】都要明确标注“对应第X章埋下的伏笔”，并与前文已埋内容一一对应，禁止只写泛化回收描述。
 
 ---
 
@@ -166,7 +167,14 @@
       "story_progress": "故事整体进度阶段（开篇/发展初期/发展中期/高潮铺垫/高潮/结局）",
       "foreshadowing": {
         "plant": ["本章埋设的伏笔描述"],
-        "payoff": ["本章回收的伏笔描述"]
+        "payoff": [
+          {
+            "content": "本章回收的伏笔描述",
+            "planted_chapter": 12,
+            "foreshadowing_id": null,
+            "keywords": []
+          }
+        ]
       },
       "emotion_hook": "触及的读者代入感场景（可选）"
     }
@@ -269,7 +277,14 @@
       "story_progress": "发展初期",
       "foreshadowing": {
         "plant": ["觉醒者联盟的真实目的"],
-        "payoff": ["神秘老者的身份初步揭示"]
+        "payoff": [
+          {
+            "content": "神秘老者的身份初步揭示",
+            "planted_chapter": 21,
+            "foreshadowing_id": null,
+            "keywords": ["老者身份"]
+          }
+        ]
       },
       "emotion_hook": "梦想生活的实现"
     }
