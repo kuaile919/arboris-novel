@@ -970,13 +970,13 @@ export class OptimizerAPI {
     chapterNumber: number,
     optimizedContent: string
   ): Promise<{ status: string; message: string }> {
-    const params = new URLSearchParams({
-      project_id: projectId,
-      chapter_number: chapterNumber.toString(),
-      optimized_content: optimizedContent
-    })
-    return request(`${OPTIMIZER_BASE}/apply-optimization?${params}`, {
-      method: 'POST'
+    return request(`${OPTIMIZER_BASE}/apply-optimization`, {
+      method: 'POST',
+      body: JSON.stringify({
+        project_id: projectId,
+        chapter_number: chapterNumber,
+        optimized_content: optimizedContent
+      })
     })
   }
 

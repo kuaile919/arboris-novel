@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +68,14 @@ class AppendStyleRequest(BaseModel):
     dimension: str = Field(..., description="优化维度")
     additional_notes: str = Field(..., description="用户的额外优化指令")
     optimization_notes: str = Field(..., description="AI返回的优化说明")
+
+
+class ApplyOptimizationRequest(BaseModel):
+    """应用优化请求"""
+
+    project_id: str = Field(..., description="项目ID")
+    chapter_number: int = Field(..., description="章节编号")
+    optimized_content: str = Field(..., description="优化后的完整章节内容")
 
 
 # 优化维度到提示词的映射
@@ -817,24 +825,32 @@ async def _update_summary_vector(
 
 @router.post("/apply-optimization")
 async def apply_optimization(
-    project_id: str,
-    chapter_number: int,
-    optimized_content: str,
     background_tasks: BackgroundTasks,
+    payload: Optional[ApplyOptimizationRequest] = Body(default=None),
+    project_id: Optional[str] = None,
+    chapter_number: Optional[int] = None,
+    optimized_content: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ):
     """
     应用优化后的内容到章节
     """
+    resolved_project_id = payload.project_id if payload else project_id
+    resolved_chapter_number = payload.chapter_number if payload else chapter_number
+    resolved_optimized_content = payload.optimized_content if payload else optimized_content
+
+    if not resolved_project_id or resolved_chapter_number is None or resolved_optimized_content is None:
+        raise HTTPException(status_code=422, detail="缺少必要参数: project_id/chapter_number/optimized_content")
+
     novel_service = NovelService(session)
 
     # 验证项目所有权
-    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    project = await novel_service.ensure_project_owner(resolved_project_id, current_user.id)
 
     # 获取章节
     chapter = next(
-        (ch for ch in project.chapters if ch.chapter_number == chapter_number),
+        (ch for ch in project.chapters if ch.chapter_number == resolved_chapter_number),
         None
     )
     if not chapter:
@@ -844,32 +860,32 @@ async def apply_optimization(
         raise HTTPException(status_code=400, detail="章节尚未选择版本")
 
     # 更新内容
-    chapter.selected_version.content = optimized_content
+    chapter.selected_version.content = resolved_optimized_content
     await session.commit()
 
     # 获取章节标题用于向量化
     outline_stmt = sa_select(ChapterOutline).where(
-        ChapterOutline.project_id == project_id,
-        ChapterOutline.chapter_number == chapter_number,
+        ChapterOutline.project_id == resolved_project_id,
+        ChapterOutline.chapter_number == resolved_chapter_number,
     )
     outline_result = await session.execute(outline_stmt)
     outline = outline_result.scalars().first()
-    title = outline.title if outline and outline.title else f"第{chapter_number}章"
+    title = outline.title if outline and outline.title else f"第{resolved_chapter_number}章"
 
     background_tasks.add_task(
         _ingest_optimized_chapter,
-        project_id,
-        chapter_number,
+        resolved_project_id,
+        resolved_chapter_number,
         title,
-        optimized_content,
+        resolved_optimized_content,
         current_user.id,
     )
 
     logger.info(
         "用户 %s 应用了项目 %s 第 %s 章的优化内容",
         current_user.id,
-        project_id,
-        chapter_number
+        resolved_project_id,
+        resolved_chapter_number
     )
 
     return {"status": "success", "message": "优化内容已应用"}
