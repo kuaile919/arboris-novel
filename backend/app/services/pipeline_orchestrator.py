@@ -543,7 +543,7 @@ class PipelineOrchestrator:
                 conversation_history=[{"role": "user", "content": plan_input}],
                 temperature=0.3,
                 user_id=user_id,
-                timeout=120.0,
+                timeout=240.0,
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)

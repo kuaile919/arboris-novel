@@ -177,6 +177,51 @@ export interface ChapterOutlineConverseResponse {
     title: string
     summary: string
   }
+  new_characters?: OutlineEntityItem[]
+  new_locations?: OutlineEntityItem[]
+  new_factions?: OutlineEntityItem[]
+  foreshadowing_plants?: OutlineForeshadowingItem[]
+  foreshadowing_payoffs?: OutlineForeshadowingItem[]
+}
+
+export interface OutlineEntityItem {
+  name: string
+  description?: string
+  first_appear_chapter?: number | null
+}
+
+export interface OutlineForeshadowingItem {
+  content: string
+  target_reveal_chapter?: number | null
+  importance?: string | null
+  keywords?: string[]
+  foreshadowing_id?: number | null
+}
+
+export interface ChapterOutlineConverseContextResponse {
+  chapter_number: number
+  title: string
+  summary: string
+  narrative_phase?: string | null
+  story_progress?: string | null
+  emotion_hook?: string | null
+  new_characters: OutlineEntityItem[]
+  new_locations: OutlineEntityItem[]
+  new_factions: OutlineEntityItem[]
+  foreshadowing_plants: OutlineForeshadowingItem[]
+  foreshadowing_payoffs: OutlineForeshadowingItem[]
+}
+
+export interface ApplyChapterOutlineConverseRequest {
+  chapter_number: number
+  title: string
+  summary: string
+  ai_message?: string
+  new_characters?: Record<string, any>[]
+  new_locations?: Record<string, any>[]
+  new_factions?: Record<string, any>[]
+  foreshadowing_plants?: Record<string, any>[]
+  foreshadowing_payoffs?: Record<string, any>[]
 }
 
 export interface BlueprintSettingImpactAnalysis {
@@ -517,6 +562,23 @@ export class NovelAPI {
         user_message: userMessage,
         conversation_history: conversationHistory
       })
+    })
+  }
+
+  static async getChapterOutlineConverseContext(
+    projectId: string,
+    chapterNumber: number
+  ): Promise<ChapterOutlineConverseContextResponse> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/${chapterNumber}/outline-converse/context`)
+  }
+
+  static async applyChapterOutlineConverse(
+    projectId: string,
+    payload: ApplyChapterOutlineConverseRequest
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/outline-converse/apply`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
     })
   }
 

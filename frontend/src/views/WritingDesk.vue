@@ -126,8 +126,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { NovelAPI } from '@/api/novel'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject, OutlinePreviewResponse } from '@/api/novel'
@@ -149,6 +149,7 @@ interface Props {
 
 const props = defineProps<Props>()
 const router = useRouter()
+const route = useRoute()
 const novelStore = useNovelStore()
 
 // 状态管理
@@ -382,8 +383,49 @@ const closeSidebar = () => {
 const loadProject = async () => {
   try {
     await novelStore.loadProject(props.id)
+    applySelectedChapterFromRoute()
   } catch (error) {
     console.error('加载项目失败:', error)
+  }
+}
+
+const parseChapterFromRoute = (): number | null => {
+  const rawChapter = route.query.chapter
+  if (rawChapter === undefined || rawChapter === null) {
+    return null
+  }
+  const chapterValue = Array.isArray(rawChapter) ? rawChapter[0] : rawChapter
+  const parsed = Number.parseInt(String(chapterValue), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null
+  }
+  return parsed
+}
+
+const syncRouteChapterQuery = (chapterNumber: number | null) => {
+  const query = { ...route.query } as Record<string, any>
+  if (chapterNumber === null) {
+    delete query.chapter
+  } else {
+    query.chapter = String(chapterNumber)
+  }
+  router.replace({
+    name: 'writing-desk',
+    params: { id: props.id },
+    query,
+  }).catch(() => {
+    // 忽略重复导航异常
+  })
+}
+
+const applySelectedChapterFromRoute = () => {
+  const chapterFromRoute = parseChapterFromRoute()
+  if (chapterFromRoute !== null) {
+    selectedChapterNumber.value = chapterFromRoute
+    return
+  }
+  if (selectedChapterNumber.value === null && project.value?.blueprint?.chapter_outline?.length) {
+    selectedChapterNumber.value = project.value.blueprint.chapter_outline[0].chapter_number
   }
 }
 
@@ -455,6 +497,7 @@ const hideVersionSelector = () => {
 
 const selectChapter = (chapterNumber: number) => {
   selectedChapterNumber.value = chapterNumber
+  syncRouteChapterQuery(chapterNumber)
   chapterGenerationResult.value = null
   selectedVersionIndex.value = 0
   closeSidebar()
@@ -470,6 +513,7 @@ const generateChapter = async (chapterNumber: number) => {
   try {
     generatingChapter.value = chapterNumber
     selectedChapterNumber.value = chapterNumber
+    syncRouteChapterQuery(chapterNumber)
 
     // 在本地更新章节状态为generating
     if (project.value?.chapters) {
@@ -679,6 +723,7 @@ const deleteChapter = async (chapterNumbers: number | number[]) => {
       // If the currently selected chapter was deleted, unselect it
       if (selectedChapterNumber.value && numbersToDelete.includes(selectedChapterNumber.value)) {
         selectedChapterNumber.value = null
+        syncRouteChapterQuery(null)
       }
     } catch (error) {
       console.error('删除章节失败:', error)
@@ -765,6 +810,26 @@ onMounted(() => {
 onUnmounted(() => {
   document.body.classList.remove('m3-novel')
 })
+
+watch(
+  () => props.id,
+  async (newId, oldId) => {
+    if (!newId || newId === oldId) {
+      return
+    }
+    selectedChapterNumber.value = null
+    chapterGenerationResult.value = null
+    selectedVersionIndex.value = 0
+    await loadProject()
+  }
+)
+
+watch(
+  () => route.query.chapter,
+  () => {
+    applySelectedChapterFromRoute()
+  }
+)
 </script>
 
 <style scoped>

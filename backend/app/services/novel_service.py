@@ -82,10 +82,12 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import settings
 from ..models import (
     BlueprintCharacter,
     BlueprintRelationship,
     Chapter,
+    ChapterOptimizationTask,
     ChapterEvaluation,
     ChapterOutline,
     ChapterVersion,
@@ -116,6 +118,7 @@ from ..schemas.novel import (
     NovelSectionResponse,
     NovelSectionType,
 )
+from ..services.vector_store_service import VectorStoreService
 
 
 class NovelService:
@@ -628,6 +631,27 @@ class NovelService:
                     )
                 )
         if "chapter_outline" in patch and patch["chapter_outline"] is not None:
+            existing_outline_result = await self.session.execute(
+                select(ChapterOutline.chapter_number).where(ChapterOutline.project_id == project_id)
+            )
+            existing_chapter_numbers = {
+                int(row[0])
+                for row in existing_outline_result.all()
+                if row and row[0] is not None
+            }
+            incoming_chapter_numbers = {
+                int(outline.get("chapter_number"))
+                for outline in patch["chapter_outline"]
+                if outline.get("chapter_number") is not None
+            }
+            removed_chapter_numbers = sorted(existing_chapter_numbers - incoming_chapter_numbers)
+            if removed_chapter_numbers:
+                await self._delete_chapter_related_data(
+                    project_id,
+                    removed_chapter_numbers,
+                    delete_outlines=False,
+                )
+
             await self.session.execute(delete(ChapterOutline).where(ChapterOutline.project_id == project_id))
             for outline in patch["chapter_outline"]:
                 self.session.add(
@@ -778,29 +802,60 @@ class NovelService:
             return
         chapter_numbers_list = sorted(chapter_numbers_set)
 
+        await self._delete_chapter_related_data(project_id, chapter_numbers_list, delete_outlines=True)
+        await self.session.commit()
+        await self._touch_project(project_id)
+
+    async def _delete_chapter_related_data(
+        self,
+        project_id: str,
+        chapter_numbers: List[int],
+        *,
+        delete_outlines: bool,
+    ) -> None:
+        chapter_numbers_set = set(chapter_numbers)
+        if not chapter_numbers_set:
+            return
+
         # 先删除与章节号强关联的数据
-        await self._cleanup_foreshadowing_for_deleted_chapters(project_id, chapter_numbers_list)
+        await self._cleanup_foreshadowing_for_deleted_chapters(project_id, chapter_numbers)
         await self.session.execute(
             delete(ChapterBlueprint).where(
                 ChapterBlueprint.project_id == project_id,
-                ChapterBlueprint.chapter_number.in_(chapter_numbers_list),
+                ChapterBlueprint.chapter_number.in_(chapter_numbers),
             )
         )
         await self.session.execute(
             delete(Chapter).where(
                 Chapter.project_id == project_id,
-                Chapter.chapter_number.in_(chapter_numbers_list),
+                Chapter.chapter_number.in_(chapter_numbers),
             )
         )
+        if delete_outlines:
+            await self.session.execute(
+                delete(ChapterOutline).where(
+                    ChapterOutline.project_id == project_id,
+                    ChapterOutline.chapter_number.in_(chapter_numbers),
+                )
+            )
         await self.session.execute(
-            delete(ChapterOutline).where(
-                ChapterOutline.project_id == project_id,
-                ChapterOutline.chapter_number.in_(chapter_numbers_list),
+            delete(ChapterOptimizationTask).where(
+                ChapterOptimizationTask.project_id == project_id,
+                ChapterOptimizationTask.chapter_number.in_(chapter_numbers),
             )
         )
+        await self._cleanup_vector_store_for_deleted_chapters(project_id, chapter_numbers)
         await self._cleanup_blueprint_entities_for_deleted_chapters(project_id, chapter_numbers_set)
-        await self.session.commit()
-        await self._touch_project(project_id)
+
+    async def _cleanup_vector_store_for_deleted_chapters(self, project_id: str, chapter_numbers: List[int]) -> None:
+        if not settings.vector_store_enabled or not chapter_numbers:
+            return
+        try:
+            vector_store = VectorStoreService()
+            await vector_store.delete_by_chapters(project_id, chapter_numbers)
+        except Exception:
+            # 向量库是非关键路径，不阻断主删除流程
+            pass
 
     async def _cleanup_foreshadowing_for_deleted_chapters(
         self,

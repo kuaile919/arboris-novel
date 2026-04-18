@@ -27,7 +27,7 @@ from sqlalchemy.orm import selectinload
 from ...core.config import settings
 from ...core.dependencies import get_current_user
 from ...db.session import AsyncSessionLocal, get_session
-from ...models.foreshadowing import Foreshadowing
+from ...models.foreshadowing import Foreshadowing, ForeshadowingResolution
 from ...models.novel import Chapter, ChapterOutline, ChapterVersion
 from ...schemas.novel import (
     Chapter as ChapterSchema,
@@ -49,7 +49,9 @@ from ...schemas.novel import (
     UpdateChapterOutlineRequest,
     ChapterOutlineConverseRequest,
     ChapterOutlineConverseResponse,
+    ChapterOutlineConverseContextResponse,
     ProposedOutline,
+    ApplyChapterOutlineConverseRequest,
     OutlinePreviewRequest,
     OutlinePreviewResponse,
     OutlineConfirmRequest,
@@ -332,7 +334,7 @@ async def _check_chapter_execution_contract(
             conversation_history=[{"role": "user", "content": judge_input}],
             temperature=0.1,
             user_id=user_id,
-            timeout=120.0,
+            timeout=240.0,
             response_format=None,
         )
         cleaned = remove_think_tags(response)
@@ -445,6 +447,68 @@ def _normalize_foreshadowing_entry(entry: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _extract_tagged_foreshadowings_from_text(
+    text: Optional[str],
+    tag: str,
+) -> List[Dict[str, Any]]:
+    """
+    从自由文本中提取 [埋]/[收] 片段，兜底结构化返回。
+    仅用于对话阶段展示，不改变主提示词协议。
+    """
+    if not text:
+        return []
+
+    normalized_text = str(text)
+    # 匹配形如: [埋] / 【埋】 ... [收] / 【收】
+    blocks = re.findall(
+        r"(?:\[|【)\s*(埋|收)\s*(?:\]|】)\s*([\s\S]*?)(?=(?:(?:\[|【)\s*(?:埋|收)\s*(?:\]|】))|$)",
+        normalized_text,
+    )
+    if not blocks:
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    for block_tag, block_text in blocks:
+        if block_tag != tag:
+            continue
+        # 常见分隔符拆分多条
+        pieces = re.split(r"[；;\n]+", block_text)
+        for piece in pieces:
+            content = piece.strip().strip("。").strip()
+            if not content:
+                continue
+
+            target_reveal_chapter: Optional[int] = None
+            # 识别“第X章”作为潜在目标章节
+            chapter_match = re.search(r"第\s*(\d+)\s*章", content)
+            if chapter_match:
+                try:
+                    target_reveal_chapter = int(chapter_match.group(1))
+                except (TypeError, ValueError):
+                    target_reveal_chapter = None
+
+            entries.append(
+                {
+                    "content": content,
+                    "target_reveal_chapter": target_reveal_chapter if tag == "埋" else None,
+                    "importance": None,
+                    "keywords": [],
+                    "foreshadowing_id": None,
+                }
+            )
+
+    # 去重
+    deduped: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in entries:
+        key = item.get("content", "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 async def _auto_resolve_foreshadowings_from_chapter(
     *,
     session: AsyncSession,
@@ -514,7 +578,7 @@ async def _auto_resolve_foreshadowings_from_chapter(
             conversation_history=[{"role": "user", "content": judge_input}],
             temperature=0.1,
             user_id=user_id,
-            timeout=120.0,
+            timeout=240.0,
             response_format=None,
         )
         cleaned = remove_think_tags(response)
@@ -652,7 +716,7 @@ async def _generate_chapter_mission(
                 conversation_history=[{"role": "user", "content": plan_input}],
                 temperature=0.3,
                 user_id=user_id,
-                timeout=120.0,
+                timeout=240.0,
             )
         except HTTPException as exc:
             detail_text = str(exc.detail)
@@ -664,7 +728,7 @@ async def _generate_chapter_mission(
                     conversation_history=[{"role": "user", "content": plan_input}],
                     temperature=0.3,
                     user_id=user_id,
-                    timeout=120.0,
+                    timeout=240.0,
                 )
             else:
                 raise
@@ -2448,32 +2512,14 @@ async def converse_chapter_outline(
 
     # 获取蓝图信息作为上下文
     project_schema = await novel_service._serialize_project(project)
-    blueprint_context = ""
-    if project_schema.blueprint:
-        bp = project_schema.blueprint
-        blueprint_context = f"""
-故事标题: {bp.title or '未设定'}
-故事概要: {bp.one_sentence_summary or '未设定'}
-风格: {bp.style or '未设定'}
-基调: {bp.tone or '未设定'}
-"""
-        if bp.chapter_outline:
-            # 获取前后章节作为上下文
-            prev_chapters = [
-                f"第{ch.chapter_number}章 - {ch.title}: {ch.summary}"
-                for ch in bp.chapter_outline
-                if ch.chapter_number < request.chapter_number
-            ][-3:]  # 最多显示前3章
-            next_chapters = [
-                f"第{ch.chapter_number}章 - {ch.title}: {ch.summary}"
-                for ch in bp.chapter_outline
-                if ch.chapter_number > request.chapter_number
-            ][:3]  # 最多显示后3章
-
-            if prev_chapters:
-                blueprint_context += f"\n前文章节:\n" + "\n".join(prev_chapters)
-            if next_chapters:
-                blueprint_context += f"\n后续章节:\n" + "\n".join(next_chapters)
+    context = await _get_chapter_outline_converse_context_data(
+        novel_service=novel_service,
+        session=session,
+        project_id=project_id,
+        chapter_number=request.chapter_number,
+        project_schema=project_schema,
+    )
+    blueprint_context = _build_outline_converse_blueprint_context(project_schema, request.chapter_number)
 
     # 构建对话消息
     current_outline = f"第{outline.chapter_number}章 - {outline.title}: {outline.summary}"
@@ -2486,10 +2532,13 @@ async def converse_chapter_outline(
 当前章节大纲:
 {current_outline}
 
+当前章节结构化信息:
+{json.dumps(context, ensure_ascii=False, indent=2)}
+
 你的任务是:
 1. 理解用户对章节大纲的修改需求
 2. 根据故事连贯性和整体结构，给出专业建议
-3. 如果用户的修改合理，生成修改后的大纲建议
+3. 如果用户的修改合理，生成修改后的大纲建议与结构化变更建议
 4. 保持修改后的风格与整体故事一致
 
 回复格式要求（JSON）:
@@ -2498,14 +2547,20 @@ async def converse_chapter_outline(
     "proposed_outline": {{
         "title": "修改后的章节标题",
         "summary": "修改后的章节摘要"
-    }}
+    }},
+    "new_characters": [{{"name":"", "description":"", "identity":"", "personality":"", "goals":"", "abilities":"", "first_appear_chapter": {request.chapter_number}}}],
+    "new_locations": [{{"name":"", "description":"", "location_type":"", "first_appear_chapter": {request.chapter_number}}}],
+    "new_factions": [{{"name":"", "description":"", "first_appear_chapter": {request.chapter_number}}}],
+    "foreshadowing_plants": [{{"content":"", "target_reveal_chapter": null, "importance":"minor", "keywords":[]}}],
+    "foreshadowing_payoffs": [{{"content":"", "foreshadowing_id": null, "keywords":[]}}]
 }}
 
 注意:
 - 只有当用户明确提出修改意图时才生成 proposed_outline
-- 如果用户只是在讨论或询问，proposed_outline 设为 null
+- 如果用户只是在讨论或询问，proposed_outline 设为 null，结构化数组返回空数组
 - 确保修改后的标题简洁有力，摘要详细但不冗长
-- 保持与前后章节的连贯性"""
+- 保持与前后章节的连贯性
+- 只返回当前章节相关的新增/变更信息，不要返回跨章节无关信息"""
 
     # 构建对话历史
     conversation_history = list(request.conversation_history)
@@ -2537,9 +2592,29 @@ async def converse_chapter_outline(
                         summary=proposed.get("summary", outline.summary)
                     )
 
+                foreshadowing_plants = _normalize_foreshadowing_entries(data.get("foreshadowing_plants", []))
+                foreshadowing_payoffs = _normalize_foreshadowing_entries(data.get("foreshadowing_payoffs", []))
+
+                # 兜底：模型常把 [埋]/[收] 写进摘要正文而非结构化字段，这里自动提取
+                fallback_text = "\n".join(
+                    [
+                        proposed_outline.summary if proposed_outline else "",
+                        ai_message or "",
+                    ]
+                )
+                if not foreshadowing_plants:
+                    foreshadowing_plants = _extract_tagged_foreshadowings_from_text(fallback_text, "埋")
+                if not foreshadowing_payoffs:
+                    foreshadowing_payoffs = _extract_tagged_foreshadowings_from_text(fallback_text, "收")
+
                 return ChapterOutlineConverseResponse(
                     ai_message=ai_message,
-                    proposed_outline=proposed_outline
+                    proposed_outline=proposed_outline,
+                    new_characters=_normalize_outline_entities(data.get("new_characters", []), request.chapter_number),
+                    new_locations=_normalize_outline_entities(data.get("new_locations", []), request.chapter_number),
+                    new_factions=_normalize_outline_entities(data.get("new_factions", []), request.chapter_number),
+                    foreshadowing_plants=foreshadowing_plants,
+                    foreshadowing_payoffs=foreshadowing_payoffs,
                 )
             except json.JSONDecodeError:
                 pass
@@ -2553,6 +2628,363 @@ async def converse_chapter_outline(
     except Exception as e:
         logger.error(f"章节大纲对话失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"对话处理失败: {str(e)}")
+
+
+@router.get(
+    "/novels/{project_id}/chapters/{chapter_number}/outline-converse/context",
+    response_model=ChapterOutlineConverseContextResponse,
+)
+async def get_chapter_outline_converse_context(
+    project_id: str,
+    chapter_number: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> ChapterOutlineConverseContextResponse:
+    novel_service = NovelService(session)
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    project_schema = await novel_service._serialize_project(project)
+    context = await _get_chapter_outline_converse_context_data(
+        novel_service=novel_service,
+        session=session,
+        project_id=project_id,
+        chapter_number=chapter_number,
+        project_schema=project_schema,
+    )
+    return ChapterOutlineConverseContextResponse(**context)
+
+
+@router.post(
+    "/novels/{project_id}/chapters/outline-converse/apply",
+    response_model=NovelProjectSchema,
+)
+async def apply_chapter_outline_converse(
+    project_id: str,
+    request: ApplyChapterOutlineConverseRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+    outline = await novel_service.get_outline(project_id, request.chapter_number)
+    if not outline:
+        raise HTTPException(status_code=404, detail="未找到对应章节大纲")
+
+    # 1) 更新大纲正文
+    outline.title = request.title
+    outline.summary = request.summary
+
+    # 2) 同步新增实体
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    project_schema = await novel_service._serialize_project(project)
+
+    new_characters = _normalize_outline_entities(request.new_characters, request.chapter_number)
+    if new_characters and project_schema.blueprint:
+        existing_names = {c.get("name") for c in project_schema.blueprint.characters if isinstance(c, dict)}
+        updated_characters = list(project_schema.blueprint.characters)
+        for char in new_characters:
+            name = (char.get("name") or "").strip()
+            if not name or name in existing_names:
+                continue
+            updated_characters.append(
+                {
+                    "name": name,
+                    "description": char.get("description", ""),
+                    "identity": char.get("identity", ""),
+                    "personality": char.get("personality", ""),
+                    "goals": char.get("goals", ""),
+                    "abilities": char.get("abilities", ""),
+                    "first_appear_chapter": request.chapter_number,
+                }
+            )
+            existing_names.add(name)
+        await novel_service.update_blueprint_characters(project_id, updated_characters)
+
+    new_locations = _normalize_outline_entities(request.new_locations, request.chapter_number)
+    if new_locations and project_schema.blueprint:
+        location_service = KeyLocationService(session)
+        await location_service.upsert_locations(project_id, new_locations)
+
+    new_factions = _normalize_outline_entities(request.new_factions, request.chapter_number)
+    if new_factions and project_schema.blueprint:
+        faction_service = FactionService(session, PromptService(session))
+        await faction_service.upsert_factions(project_id, new_factions)
+
+    # 3) 同步伏笔埋设/回收
+    foreshadowing_service = ForeshadowingService(session)
+    chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number, auto_commit=False)
+
+    existing_foreshadowings, _ = await foreshadowing_service.get_foreshadowings(project_id, limit=2000)
+    existing_fs_contents = {fs.content for fs in existing_foreshadowings}
+
+    for plant in _normalize_foreshadowing_entries(request.foreshadowing_plants):
+        content = plant.get("content", "")
+        if not content or content in existing_fs_contents:
+            continue
+        await foreshadowing_service.create_foreshadowing(
+            project_id=project_id,
+            chapter_id=chapter.id,
+            chapter_number=request.chapter_number,
+            content=content,
+            foreshadowing_type="hint",
+            keywords=plant.get("keywords") or [],
+            is_manual=False,
+            ai_confidence=0.8,
+            target_reveal_chapter=plant.get("target_reveal_chapter"),
+            importance=plant.get("importance"),
+        )
+        existing_fs_contents.add(content)
+
+    for payoff in _normalize_foreshadowing_entries(request.foreshadowing_payoffs):
+        payoff_content = payoff.get("content", "")
+        if not payoff_content:
+            continue
+        unresolved_foreshadowings = await foreshadowing_service.get_unresolved_foreshadowings(
+            project_id, request.chapter_number
+        )
+        matched = None
+        payoff_id = payoff.get("foreshadowing_id")
+        if payoff_id is not None:
+            matched = next((fs for fs in unresolved_foreshadowings if fs.id == payoff_id), None)
+        if not matched:
+            for fs in unresolved_foreshadowings:
+                if payoff_content in fs.content or fs.content in payoff_content:
+                    matched = fs
+                    break
+        if matched:
+            matched.target_reveal_chapter = request.chapter_number
+            previous_note = (matched.author_note or "").strip()
+            schedule_note = f"[计划回收章]: 第{request.chapter_number}章"
+            matched.author_note = f"{previous_note}\n{schedule_note}".strip() if previous_note else schedule_note
+
+    # 4) 可选：提炼 AI 建议到规则库（与旧 update-outline 行为一致）
+    if request.ai_message and request.ai_message.strip():
+        try:
+            llm_service = LLMService(session)
+            style_rule_service = UserStyleRuleService(session)
+            extract_prompt = f"""请将以下关于小说大纲生成的建议提炼为一条简洁、通用的规则。
+
+要求：
+1. 规则应该是通用的，适用于所有小说大纲生成场景
+2. 规则应该简洁明了，不超过100字
+3. 规则应该以\"应该\"或\"必须\"开头
+4. 去除具体章节号、角色名等特定信息
+
+AI建议内容：
+{request.ai_message.strip()}
+
+请直接输出提炼后的规则。"""
+            extracted_rule = await llm_service.generate(
+                prompt=extract_prompt,
+                system_prompt="你是规则提炼专家。",
+                temperature=0.3,
+                max_tokens=200,
+            )
+            if extracted_rule and extracted_rule.strip():
+                await style_rule_service.add_rule(
+                    user_id=current_user.id,
+                    project_id=project_id,
+                    rule_type="outline_generation",
+                    content=extracted_rule.strip(),
+                    source="outline_converse_apply",
+                )
+        except Exception as e:
+            logger.warning("提炼大纲对话规则失败: %s", e)
+
+    await session.commit()
+    return await _load_project_schema(novel_service, project_id, current_user.id)
+
+
+def _build_outline_converse_blueprint_context(project_schema: NovelProjectSchema, chapter_number: int) -> str:
+    blueprint_context = ""
+    if project_schema.blueprint:
+        bp = project_schema.blueprint
+        blueprint_context = f"""
+故事标题: {bp.title or '未设定'}
+故事概要: {bp.one_sentence_summary or '未设定'}
+风格: {bp.style or '未设定'}
+基调: {bp.tone or '未设定'}
+"""
+        if bp.chapter_outline:
+            prev_chapters = [
+                f"第{ch.chapter_number}章 - {ch.title}: {ch.summary}"
+                for ch in bp.chapter_outline
+                if ch.chapter_number < chapter_number
+            ][-3:]
+            next_chapters = [
+                f"第{ch.chapter_number}章 - {ch.title}: {ch.summary}"
+                for ch in bp.chapter_outline
+                if ch.chapter_number > chapter_number
+            ][:3]
+            if prev_chapters:
+                blueprint_context += f"\n前文章节:\n" + "\n".join(prev_chapters)
+            if next_chapters:
+                blueprint_context += f"\n后续章节:\n" + "\n".join(next_chapters)
+    return blueprint_context
+
+
+def _normalize_outline_entities(raw_items: Any, default_chapter: int) -> List[Dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(
+            {
+                "name": name,
+                "description": str(item.get("description") or "").strip(),
+                "identity": str(item.get("identity") or "").strip(),
+                "personality": str(item.get("personality") or "").strip(),
+                "goals": str(item.get("goals") or "").strip(),
+                "abilities": str(item.get("abilities") or "").strip(),
+                "location_type": str(item.get("location_type") or item.get("type") or "").strip(),
+                "first_appear_chapter": item.get("first_appear_chapter") or default_chapter,
+            }
+        )
+    return normalized
+
+
+def _normalize_foreshadowing_entries(raw_items: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        item = _normalize_foreshadowing_entry(raw)
+        if not item:
+            continue
+        key = f"{item.get('foreshadowing_id')}::{item.get('content')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(item)
+    return normalized
+
+
+async def _get_chapter_outline_converse_context_data(
+    *,
+    novel_service: NovelService,
+    session: AsyncSession,
+    project_id: str,
+    chapter_number: int,
+    project_schema: NovelProjectSchema,
+) -> Dict[str, Any]:
+    outline = await novel_service.get_outline(project_id, chapter_number)
+    if not outline:
+        raise HTTPException(status_code=404, detail="未找到对应章节大纲")
+
+    meta = outline.metadata if isinstance(outline.metadata, dict) else {}
+    narrative_phase = str(meta.get("narrative_phase") or "") or None
+    story_progress = str(meta.get("story_progress") or "") or None
+    emotion_hook = str(meta.get("emotion_hook") or "") or None
+
+    chapter_characters: List[Dict[str, Any]] = []
+    chapter_locations: List[Dict[str, Any]] = []
+    chapter_factions: List[Dict[str, Any]] = []
+
+    if project_schema.blueprint:
+        def _to_int(value: Any) -> Optional[int]:
+            try:
+                return int(value) if value is not None and str(value).strip() != "" else None
+            except (TypeError, ValueError):
+                return None
+
+        for char in project_schema.blueprint.characters or []:
+            if not isinstance(char, dict):
+                continue
+            if _to_int(char.get("first_appear_chapter")) == chapter_number:
+                chapter_characters.append(
+                    {
+                        "name": str(char.get("name") or ""),
+                        "description": str(char.get("description") or ""),
+                        "first_appear_chapter": chapter_number,
+                    }
+                )
+
+        ws = project_schema.blueprint.world_setting if isinstance(project_schema.blueprint.world_setting, dict) else {}
+        for loc in (ws.get("key_locations") or []):
+            if not isinstance(loc, dict):
+                continue
+            if _to_int(loc.get("first_appear_chapter")) == chapter_number:
+                chapter_locations.append(
+                    {
+                        "name": str(loc.get("name") or ""),
+                        "description": str(loc.get("description") or ""),
+                        "first_appear_chapter": chapter_number,
+                    }
+                )
+        for fac in (ws.get("factions") or []):
+            if not isinstance(fac, dict):
+                continue
+            if _to_int(fac.get("first_appear_chapter")) == chapter_number:
+                chapter_factions.append(
+                    {
+                        "name": str(fac.get("name") or ""),
+                        "description": str(fac.get("description") or ""),
+                        "first_appear_chapter": chapter_number,
+                    }
+                )
+
+    plants_result = await session.execute(
+        select(Foreshadowing).where(
+            Foreshadowing.project_id == project_id,
+            Foreshadowing.chapter_number == chapter_number,
+        )
+    )
+    plants = [
+        {
+            "content": fs.content,
+            "target_reveal_chapter": fs.target_reveal_chapter,
+            "importance": fs.importance,
+            "keywords": fs.keywords or [],
+            "foreshadowing_id": fs.id,
+        }
+        for fs in plants_result.scalars().all()
+    ]
+
+    payoff_result = await session.execute(
+        select(ForeshadowingResolution).where(
+            ForeshadowingResolution.resolved_at_chapter_number == chapter_number
+        )
+    )
+    payoffs: List[Dict[str, Any]] = []
+    for resolution in payoff_result.scalars().all():
+        fs = await session.get(Foreshadowing, resolution.foreshadowing_id)
+        if not fs or fs.project_id != project_id:
+            continue
+        payoffs.append(
+            {
+                "content": resolution.resolution_text or fs.content,
+                "foreshadowing_id": fs.id,
+                "keywords": fs.keywords or [],
+            }
+        )
+
+    # 兜底：历史章节可能仅在摘要中写了 [埋]/[收]，但未同步到结构化表
+    summary_text = outline.summary or ""
+    if not plants:
+        plants = _extract_tagged_foreshadowings_from_text(summary_text, "埋")
+    if not payoffs:
+        payoffs = _extract_tagged_foreshadowings_from_text(summary_text, "收")
+
+    return {
+        "chapter_number": chapter_number,
+        "title": outline.title,
+        "summary": outline.summary or "",
+        "narrative_phase": narrative_phase,
+        "story_progress": story_progress,
+        "emotion_hook": emotion_hook,
+        "new_characters": chapter_characters,
+        "new_locations": chapter_locations,
+        "new_factions": chapter_factions,
+        "foreshadowing_plants": plants,
+        "foreshadowing_payoffs": payoffs,
+    }
 
 
 @router.post("/novels/{project_id}/chapters/delete", response_model=NovelProjectSchema)
@@ -3113,6 +3545,52 @@ async def preview_chapters_outline(
                     "keywords": payoff.get("keywords", []),
                 })
 
+            # 兜底：若结构化 foreshadowing 缺失，则从章节摘要中的 [埋]/【埋】、[收]/【收】提取
+            summary_text = str(item.get("summary") or "")
+            if summary_text:
+                fallback_plants = _extract_tagged_foreshadowings_from_text(summary_text, "埋")
+                fallback_payoffs = _extract_tagged_foreshadowings_from_text(summary_text, "收")
+                for plant in fallback_plants:
+                    if not plant.get("content"):
+                        continue
+                    foreshadowing_plants.append({
+                        "chapter_number": chapter_number,
+                        "content": plant["content"],
+                        "target_reveal_chapter": plant.get("target_reveal_chapter"),
+                        "importance": plant.get("importance"),
+                        "keywords": plant.get("keywords", []),
+                    })
+                for payoff in fallback_payoffs:
+                    if not payoff.get("content"):
+                        continue
+                    foreshadowing_payoffs.append({
+                        "chapter_number": chapter_number,
+                        "content": payoff["content"],
+                        "foreshadowing_id": payoff.get("foreshadowing_id"),
+                        "keywords": payoff.get("keywords", []),
+                    })
+
+        # 去重，避免结构化与摘要兜底重复
+        seen_plants: set[tuple[Any, str]] = set()
+        dedup_plants: List[Dict[str, Any]] = []
+        for item in foreshadowing_plants:
+            key = (item.get("chapter_number"), str(item.get("content") or "").strip())
+            if not key[1] or key in seen_plants:
+                continue
+            seen_plants.add(key)
+            dedup_plants.append(item)
+        foreshadowing_plants = dedup_plants
+
+        seen_payoffs: set[tuple[Any, str]] = set()
+        dedup_payoffs: List[Dict[str, Any]] = []
+        for item in foreshadowing_payoffs:
+            key = (item.get("chapter_number"), str(item.get("content") or "").strip())
+            if not key[1] or key in seen_payoffs:
+                continue
+            seen_payoffs.add(key)
+            dedup_payoffs.append(item)
+        foreshadowing_payoffs = dedup_payoffs
+
         return OutlinePreviewResponse(
             chapters=chapters_preview,
             new_characters=new_characters,
@@ -3230,6 +3708,62 @@ async def confirm_chapters_outline(
         # 处理伏笔
         foreshadowing_plants = preview_data.get("foreshadowing_plants", [])
         foreshadowing_payoffs = preview_data.get("foreshadowing_payoffs", [])
+
+        # 兜底：若预览未返回结构化伏笔，则从章节摘要中的 [埋]/【埋】、[收]/【收】补齐
+        if not foreshadowing_plants or not foreshadowing_payoffs:
+            for item in chapters_data:
+                chapter_number = item.get("chapter_number")
+                summary_text = str(item.get("summary") or "")
+                if not summary_text or chapter_number is None:
+                    continue
+
+                if not foreshadowing_plants:
+                    for plant in _extract_tagged_foreshadowings_from_text(summary_text, "埋"):
+                        if not plant.get("content"):
+                            continue
+                        foreshadowing_plants.append(
+                            {
+                                "chapter_number": chapter_number,
+                                "content": plant["content"],
+                                "target_reveal_chapter": plant.get("target_reveal_chapter"),
+                                "importance": plant.get("importance"),
+                                "keywords": plant.get("keywords", []),
+                            }
+                        )
+
+                if not foreshadowing_payoffs:
+                    for payoff in _extract_tagged_foreshadowings_from_text(summary_text, "收"):
+                        if not payoff.get("content"):
+                            continue
+                        foreshadowing_payoffs.append(
+                            {
+                                "chapter_number": chapter_number,
+                                "content": payoff["content"],
+                                "foreshadowing_id": payoff.get("foreshadowing_id"),
+                                "keywords": payoff.get("keywords", []),
+                            }
+                        )
+
+        # 去重，避免重复入库
+        seen_plants: set[tuple[Any, str]] = set()
+        dedup_plants: List[Dict[str, Any]] = []
+        for item in foreshadowing_plants:
+            key = (item.get("chapter_number"), str(item.get("content") or "").strip())
+            if not key[1] or key in seen_plants:
+                continue
+            seen_plants.add(key)
+            dedup_plants.append(item)
+        foreshadowing_plants = dedup_plants
+
+        seen_payoffs: set[tuple[Any, str]] = set()
+        dedup_payoffs: List[Dict[str, Any]] = []
+        for item in foreshadowing_payoffs:
+            key = (item.get("chapter_number"), str(item.get("content") or "").strip())
+            if not key[1] or key in seen_payoffs:
+                continue
+            seen_payoffs.add(key)
+            dedup_payoffs.append(item)
+        foreshadowing_payoffs = dedup_payoffs
 
         logger.info(f"伏笔数据: plants={len(foreshadowing_plants)}, payoffs={len(foreshadowing_payoffs)}")
 

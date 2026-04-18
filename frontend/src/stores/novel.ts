@@ -4,6 +4,15 @@ import { ref, computed } from 'vue'
 import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline, OutlinePreviewResponse } from '@/api/novel'
 import { NovelAPI } from '@/api/novel'
 
+type ChapterGenerationNoticeStatus = 'successful' | 'waiting_for_confirm' | 'failed' | 'evaluation_failed'
+
+interface ChapterGenerationFinishedDetail {
+  projectId: string
+  projectTitle: string
+  chapterNumber: number
+  status: ChapterGenerationNoticeStatus
+}
+
 export const useNovelStore = defineStore('novel', () => {
   // State
   const projects = ref<NovelProjectSummary[]>([])
@@ -14,6 +23,69 @@ export const useNovelStore = defineStore('novel', () => {
   const pendingChapterEdits = new Map<string, string>()
   const outlinePreview = ref<OutlinePreviewResponse | null>(null)
   const isPreviewLoading = ref(false)
+  let loadProjectRequestSeq = 0
+  const chapterStatusTrackers = new Map<string, number>()
+  const chapterNoticeDedup = new Set<string>()
+
+  const notifyChapterGenerationFinished = (detail: ChapterGenerationFinishedDetail) => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    const dedupKey = `${detail.projectId}:${detail.chapterNumber}:${detail.status}`
+    if (chapterNoticeDedup.has(dedupKey)) {
+      return
+    }
+    chapterNoticeDedup.add(dedupKey)
+    window.dispatchEvent(
+      new CustomEvent<ChapterGenerationFinishedDetail>('chapter-generation-finished', { detail })
+    )
+  }
+
+  const stopChapterStatusTracking = (projectId: string, chapterNumber: number) => {
+    const trackerKey = `${projectId}:${chapterNumber}`
+    const timer = chapterStatusTrackers.get(trackerKey)
+    if (timer !== undefined) {
+      window.clearInterval(timer)
+      chapterStatusTrackers.delete(trackerKey)
+    }
+  }
+
+  const startChapterStatusTracking = (projectId: string, chapterNumber: number, projectTitle: string) => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    stopChapterStatusTracking(projectId, chapterNumber)
+
+    const trackerKey = `${projectId}:${chapterNumber}`
+    const timer = window.setInterval(async () => {
+      try {
+        const status = await NovelAPI.getChapterRuntimeStatus(projectId, chapterNumber)
+        if (status.generation_status === 'generating' || status.generation_status === 'evaluating' || status.generation_status === 'selecting') {
+          return
+        }
+
+        stopChapterStatusTracking(projectId, chapterNumber)
+
+        if (
+          status.generation_status === 'successful' ||
+          status.generation_status === 'waiting_for_confirm' ||
+          status.generation_status === 'failed' ||
+          status.generation_status === 'evaluation_failed'
+        ) {
+          notifyChapterGenerationFinished({
+            projectId,
+            projectTitle,
+            chapterNumber,
+            status: status.generation_status,
+          })
+        }
+      } catch {
+        // 静默重试，避免后台跟踪打断用户
+      }
+    }, 5000)
+
+    chapterStatusTrackers.set(trackerKey, timer)
+  }
 
   // Getters
   const projectsCount = computed(() => projects.value.length)
@@ -49,12 +121,17 @@ export const useNovelStore = defineStore('novel', () => {
   }
 
   async function loadProject(projectId: string, silent: boolean = false) {
+    const requestSeq = ++loadProjectRequestSeq
     if (!silent) {
       isLoading.value = true
     }
     error.value = null
     try {
-      currentProject.value = await NovelAPI.getNovel(projectId)
+      const project = await NovelAPI.getNovel(projectId)
+      if (requestSeq !== loadProjectRequestSeq) {
+        return
+      }
+      currentProject.value = project
     } catch (err) {
       error.value = err instanceof Error ? err.message : '加载项目失败'
     } finally {
@@ -135,10 +212,14 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
+      const projectId = currentProject.value.id
       if (!blueprint) {
         throw new Error('缺少蓝图数据')
       }
-      currentProject.value = await NovelAPI.saveBlueprint(currentProject.value.id, blueprint)
+      const updatedProject = await NovelAPI.saveBlueprint(projectId, blueprint)
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : '保存蓝图失败'
       throw err
@@ -154,8 +235,31 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
-      const updatedProject = await NovelAPI.generateChapter(currentProject.value.id, chapterNumber)
-      currentProject.value = updatedProject // 更新 store 中的当前项目
+      const projectId = currentProject.value.id
+      const projectTitle = currentProject.value.title || '未命名小说'
+      startChapterStatusTracking(projectId, chapterNumber, projectTitle)
+      const updatedProject = await NovelAPI.generateChapter(projectId, chapterNumber)
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject // 更新 store 中的当前项目
+      }
+      const chapter = updatedProject.chapters?.find(ch => ch.chapter_number === chapterNumber)
+      if (
+        chapter &&
+        (
+          chapter.generation_status === 'successful' ||
+          chapter.generation_status === 'waiting_for_confirm' ||
+          chapter.generation_status === 'failed' ||
+          chapter.generation_status === 'evaluation_failed'
+        )
+      ) {
+        stopChapterStatusTracking(projectId, chapterNumber)
+        notifyChapterGenerationFinished({
+          projectId,
+          projectTitle,
+          chapterNumber,
+          status: chapter.generation_status,
+        })
+      }
       return updatedProject
     } catch (err) {
       error.value = err instanceof Error ? err.message : '生成章节失败'
@@ -169,8 +273,11 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
-      const updatedProject = await NovelAPI.evaluateChapter(currentProject.value.id, chapterNumber)
-      currentProject.value = updatedProject
+      const projectId = currentProject.value.id
+      const updatedProject = await NovelAPI.evaluateChapter(projectId, chapterNumber)
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject
+      }
       return updatedProject
     } catch (err) {
       error.value = err instanceof Error ? err.message : '评估章节失败'
@@ -185,12 +292,15 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
+      const projectId = currentProject.value.id
       const updatedProject = await NovelAPI.selectChapterVersion(
-        currentProject.value.id,
+        projectId,
         chapterNumber,
         versionIndex
       )
-      currentProject.value = updatedProject // 更新 store
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject // 更新 store
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : '选择章节版本失败'
       throw err
@@ -228,11 +338,14 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
+      const projectId = currentProject.value.id
       const updatedProject = await NovelAPI.updateChapterOutline(
-        currentProject.value.id,
+        projectId,
         chapterOutline
       )
-      currentProject.value = updatedProject // 更新 store
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject // 更新 store
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : '更新章节大纲失败'
       throw err
@@ -245,12 +358,15 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
+      const projectId = currentProject.value.id
       const numbersToDelete = Array.isArray(chapterNumbers) ? chapterNumbers : [chapterNumbers]
       const updatedProject = await NovelAPI.deleteChapter(
-        currentProject.value.id,
+        projectId,
         numbersToDelete
       )
-      currentProject.value = updatedProject // 更新 store
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject // 更新 store
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : '删除章节失败'
       throw err
@@ -263,13 +379,16 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
+      const projectId = currentProject.value.id
       const updatedProject = await NovelAPI.generateChapterOutline(
-        currentProject.value.id,
+        projectId,
         startChapter,
         numChapters,
         userHint
       )
-      currentProject.value = updatedProject // 更新 store
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject // 更新 store
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : '生成大纲失败'
       throw err
@@ -306,15 +425,18 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
+      const projectId = currentProject.value.id
       if (!outlinePreview.value) {
         throw new Error('没有预览数据')
       }
       const updatedProject = await NovelAPI.confirmChapterOutline(
-        currentProject.value.id,
+        projectId,
         startChapter,
         outlinePreview.value as unknown as Record<string, any>
       )
-      currentProject.value = updatedProject
+      if (currentProject.value?.id === projectId) {
+        currentProject.value = updatedProject
+      }
       outlinePreview.value = null // 清除预览
       // 触发伏笔数据更新事件
       window.dispatchEvent(new CustomEvent('foreshadowing-updated'))

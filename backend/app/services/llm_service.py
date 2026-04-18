@@ -323,16 +323,19 @@ class LLMService:
                 body = getattr(exc, "body", None)
                 request_id = None
                 provider_detail = None
+                provider_code = None
 
                 if isinstance(body, dict):
                     request_id = body.get("request_id")
                     error_data = body.get("error", {})
                     if isinstance(error_data, dict):
                         provider_detail = error_data.get("message_zh") or error_data.get("message")
+                        raw_code = error_data.get("code")
+                        provider_code = str(raw_code) if raw_code is not None else None
                 provider_detail = provider_detail or str(exc)
 
                 logger.error(
-                    "LLM anthropic status error: attempt=%d/%d provider=%s model=%s user_id=%s status=%s request_id=%s detail=%s",
+                    "LLM anthropic status error: attempt=%d/%d provider=%s model=%s user_id=%s status=%s request_id=%s code=%s detail=%s",
                     attempt_index,
                     total_attempts,
                     config.get("provider"),
@@ -340,8 +343,24 @@ class LLMService:
                     user_id,
                     status_code,
                     request_id,
+                    provider_code,
                     provider_detail,
                     exc_info=exc,
+                )
+
+                transient_provider_codes = {"1234", "429", "500", "502", "503", "504"}
+                transient_keywords = (
+                    "网络错误",
+                    "network error",
+                    "timeout",
+                    "timed out",
+                    "temporarily unavailable",
+                    "connection reset",
+                    "请稍后重试",
+                )
+                is_transient_provider_error = (
+                    provider_code in transient_provider_codes
+                    or any(keyword in provider_detail.lower() for keyword in transient_keywords)
                 )
 
                 if status_code in (401, 403):
@@ -352,6 +371,13 @@ class LLMService:
                 if status_code and status_code >= 500:
                     detail = f"AI 服务暂时不可用，请稍后重试（request_id: {request_id}）" if request_id else "AI 服务暂时不可用，请稍后重试"
                     raise HTTPException(status_code=503, detail=detail) from exc
+                if is_transient_provider_error:
+                    detail = (
+                        f"{provider_detail}（request_id: {request_id}）"
+                        if request_id and request_id not in provider_detail
+                        else provider_detail
+                    )
+                    raise HTTPException(status_code=503, detail=detail[:300]) from exc
                 detail = provider_detail[:300] if provider_detail else "AI 服务请求失败"
                 raise HTTPException(status_code=400, detail=detail) from exc
 

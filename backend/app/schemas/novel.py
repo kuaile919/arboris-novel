@@ -309,10 +309,55 @@ class ProposedOutline(BaseModel):
     summary: str
 
 
+class OutlineEntityItem(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    first_appear_chapter: Optional[int] = None
+
+
+class OutlineForeshadowingItem(BaseModel):
+    content: str
+    target_reveal_chapter: Optional[int] = None
+    importance: Optional[str] = None
+    keywords: List[str] = Field(default_factory=list)
+    foreshadowing_id: Optional[int] = None
+
+
+class ChapterOutlineConverseContextResponse(BaseModel):
+    chapter_number: int
+    title: str
+    summary: str
+    narrative_phase: Optional[str] = None
+    story_progress: Optional[str] = None
+    emotion_hook: Optional[str] = None
+    new_characters: List[OutlineEntityItem] = Field(default_factory=list)
+    new_locations: List[OutlineEntityItem] = Field(default_factory=list)
+    new_factions: List[OutlineEntityItem] = Field(default_factory=list)
+    foreshadowing_plants: List[OutlineForeshadowingItem] = Field(default_factory=list)
+    foreshadowing_payoffs: List[OutlineForeshadowingItem] = Field(default_factory=list)
+
+
 class ChapterOutlineConverseResponse(BaseModel):
     """章节大纲对话修改响应"""
     ai_message: str
     proposed_outline: Optional[ProposedOutline] = None
+    new_characters: List[OutlineEntityItem] = Field(default_factory=list)
+    new_locations: List[OutlineEntityItem] = Field(default_factory=list)
+    new_factions: List[OutlineEntityItem] = Field(default_factory=list)
+    foreshadowing_plants: List[OutlineForeshadowingItem] = Field(default_factory=list)
+    foreshadowing_payoffs: List[OutlineForeshadowingItem] = Field(default_factory=list)
+
+
+class ApplyChapterOutlineConverseRequest(BaseModel):
+    chapter_number: int
+    title: str
+    summary: str
+    ai_message: Optional[str] = Field(default=None, description="AI 对话建议文本，用于提炼规则")
+    new_characters: List[Dict[str, Any]] = Field(default_factory=list)
+    new_locations: List[Dict[str, Any]] = Field(default_factory=list)
+    new_factions: List[Dict[str, Any]] = Field(default_factory=list)
+    foreshadowing_plants: List[Dict[str, Any]] = Field(default_factory=list)
+    foreshadowing_payoffs: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ========== 大纲预览相关 ==========

@@ -184,6 +184,15 @@ class LLMClient:
             except Exception as e:
                 status_code = getattr(e, "status_code", None)
                 text_payload = str(e)
+                body = getattr(e, "body", None)
+                provider_code = None
+                provider_detail = None
+                if isinstance(body, dict):
+                    error_data = body.get("error", {})
+                    if isinstance(error_data, dict):
+                        raw_code = error_data.get("code")
+                        provider_code = str(raw_code) if raw_code is not None else None
+                        provider_detail = error_data.get("message_zh") or error_data.get("message")
                 inferred_500 = status_code is None and "'code': '500'" in text_payload
                 retryable_network = isinstance(
                     e,
@@ -194,7 +203,23 @@ class LLMClient:
                         TimeoutError,
                     ),
                 )
-                retryable = status_code in retryable_status_codes or inferred_500 or retryable_network
+                transient_provider_codes = {"1234", "429", "500", "502", "503", "504"}
+                provider_text = (provider_detail or text_payload).lower()
+                transient_keywords = (
+                    "网络错误",
+                    "network error",
+                    "timeout",
+                    "timed out",
+                    "temporarily unavailable",
+                    "connection reset",
+                    "连接被",
+                    "请稍后重试",
+                )
+                retryable_provider = (
+                    (provider_code in transient_provider_codes)
+                    or any(keyword in provider_text for keyword in transient_keywords)
+                )
+                retryable = status_code in retryable_status_codes or inferred_500 or retryable_network or retryable_provider
 
                 if emitted_content or not retryable or attempt >= max_retries:
                     logger.error("[LLMClient] _stream_anthropic 异常: %s, type=%s", text_payload, type(e).__name__)
@@ -203,10 +228,12 @@ class LLMClient:
 
                 wait_seconds = attempt
                 logger.warning(
-                    "[LLMClient] _stream_anthropic 临时错误，准备重试: attempt=%d/%d status=%s network_retry=%s wait=%ss error=%s",
+                    "[LLMClient] _stream_anthropic 临时错误，准备重试: attempt=%d/%d status=%s provider_code=%s provider_retry=%s network_retry=%s wait=%ss error=%s",
                     attempt,
                     max_retries,
                     status_code,
+                    provider_code,
+                    retryable_provider,
                     retryable_network,
                     wait_seconds,
                     text_payload,

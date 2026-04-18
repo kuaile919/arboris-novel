@@ -519,6 +519,7 @@ const originalContent = ref('')
 const optimizedContent = ref('')
 const optimizeResultNotes = ref('')
 const optimizeTaskId = ref<string | null>(null)
+const optimizeTargetChapterNumber = ref<number | null>(null)
 const isCheckingOptimizeResult = ref(false)
 const diffViewerRef = ref<InstanceType<typeof TextDiffViewer> | null>(null)
 const selectedOptimizedText = ref('')
@@ -680,6 +681,7 @@ const resetSelectionPolishState = () => {
 const closeOptimizeResult = () => {
   showOptimizeResult.value = false
   clearSelectedOptimizationText()
+  optimizeTargetChapterNumber.value = null
 }
 
 const enterSelectionPolishMode = async () => {
@@ -783,12 +785,16 @@ const undoLastSelectionPolish = () => {
 
 const openOptimizeResultFromTask = (task: {
   dimension: string
+  chapter_number?: number | null
   original_content?: string | null
   optimized_content?: string | null
   optimization_notes?: string | null
 }) => {
   resetSelectionPolishState()
   selectedDimension.value = task.dimension
+  optimizeTargetChapterNumber.value = typeof task.chapter_number === 'number'
+    ? task.chapter_number
+    : props.selectedChapter.chapter_number
   originalContent.value = task.original_content || cleanVersionContent(props.selectedChapter.content || '')
   optimizedContent.value = task.optimized_content || ''
   optimizeResultNotes.value = task.optimization_notes || '优化完成'
@@ -826,6 +832,7 @@ const startOptimize = async () => {
   originalContent.value = cleanVersionContent(props.selectedChapter.content || '')
 
   try {
+    optimizeTargetChapterNumber.value = props.selectedChapter.chapter_number
     const task = await OptimizerAPI.optimizeChapterAsync({
       project_id: props.projectId,
       chapter_number: props.selectedChapter.chapter_number,
@@ -853,6 +860,9 @@ const viewLatestOptimizeResult = async () => {
       props.selectedChapter.chapter_number
     )
     optimizeTaskId.value = task.task_id
+    optimizeTargetChapterNumber.value = typeof task.chapter_number === 'number'
+      ? task.chapter_number
+      : props.selectedChapter.chapter_number
 
     if (task.status === 'completed') {
       openOptimizeResultFromTask(task)
@@ -880,9 +890,10 @@ const applyOptimization = async () => {
   isApplying.value = true
 
   try {
+    const targetChapterNumber = optimizeTargetChapterNumber.value ?? props.selectedChapter.chapter_number
     await OptimizerAPI.applyOptimization(
       props.projectId,
-      props.selectedChapter.chapter_number,
+      targetChapterNumber,
       optimizedContent.value
     )
 
@@ -897,6 +908,7 @@ const applyOptimization = async () => {
     optimizedContent.value = ''
     optimizeResultNotes.value = ''
     optimizeTaskId.value = null
+    optimizeTargetChapterNumber.value = null
     stopOptimizePolling()
 
     // 刷新页面以显示新内容
